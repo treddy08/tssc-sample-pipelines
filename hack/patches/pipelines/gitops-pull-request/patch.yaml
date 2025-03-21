@@ -6,4 +6,4 @@
   # branch in the enterprise-contract/ec-policies repo. Change it to a config file
   # that uses a stable release branch of the ec-policies repo for better stability
   # in general, and better ongoing compatibility with ec v0.4.
-  value: github.com/enterprise-contract/config//default-v0.4
+  value: github.com/enterprise-contract/config//tekton-slsa3-v0.6
