@@ -10,12 +10,10 @@ spec:
       description: URL of gitops repository to update with the newly built image.
     - name: image
       type: string
-      description: Reference of the newly built image to use.
-    - name: gitops-auth-secret-name
+      description: Reference of the newly built image to use..
+    - name: environment
+      default: development
       type: string
-      default: gitops-auth-secret
-      description: |
-        Secret of basic-auth type containing credentials to commit into gitops repository.
   workspaces:
     - name: gitops-auth
       optional: true
@@ -27,6 +25,8 @@ spec:
           value: $(params.gitops-repo-url)
         - name: PARAM_IMAGE
           value: $(params.image)
+        - name: PARAM_ENV
+          value: $(params.environment)
         - name: WORKSPACE_GITOPS_AUTH_DIRECTORY_BOUND
           value: $(workspaces.gitops-auth.bound)
         - name: WORKSPACE_GITOPS_AUTH_DIRECTORY_PATH
@@ -65,7 +65,7 @@ spec:
         cd ${gitops_repo_name}
 
         component_name=$(yq .metadata.name application.yaml)
-        deployment_patch_filepath="components/${component_name}/overlays/development/deployment-patch.yaml"
+        deployment_patch_filepath="components/${component_name}/overlays/${PARAM_ENV}/deployment-patch.yaml"
         IMAGE_PATH='.spec.template.spec.containers[0].image'
         old_image=$(yq "${IMAGE_PATH}" "${deployment_patch_filepath}")
         yq e -i "${IMAGE_PATH} |= \"${PARAM_IMAGE}\"" "${deployment_patch_filepath}"

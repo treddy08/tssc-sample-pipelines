@@ -5,7 +5,7 @@ metadata:
     pipelines.openshift.io/runtime: generic
     pipelines.openshift.io/strategy: docker
     pipelines.openshift.io/used-by: build-cloud
-  name: docker-build-rhtap
+  name: maven-build-ci
 spec:
   finally:
     - name: show-sbom
@@ -74,6 +74,15 @@ spec:
       description: Path to a file with build arguments for buildah, see https://www.mankier.com/1/buildah-build#--build-arg-file
       name: build-args-file
       type: string
+    - name: trustification-secret-name
+      default: tpa-secret
+      type: string
+    - name: fail-if-trustification-not-configured
+      default: 'true'
+      type: string
+    - name: sboms-dir
+      default: sboms
+      type: string
   results:
     - name: IMAGE_URL
       value: $(tasks.build-container.results.IMAGE_URL)
@@ -115,10 +124,12 @@ spec:
         - name: basic-auth
           workspace: git-auth
     - name: package
+      params:
+      - name: SUBDIRECTORY
+        value: source
       runAfter:
         - clone-repository
       taskRef:
-        kind: ClusterTask
         name: maven
       workspaces:
         - name: source
@@ -142,8 +153,10 @@ spec:
             - $(params.build-args[*])
         - name: BUILD_ARGS_FILE
           value: $(params.build-args-file)
+        - name: SBOMS_DIR
+          value: $(params.sboms-dir)
       runAfter:
-        - clone-repository
+        - package
       taskRef:
         name: buildah-rhtap
       when:
@@ -154,6 +167,21 @@ spec:
       workspaces:
         - name: source
           workspace: workspace
+    - name: upload-sboms-to-trustification
+      params:
+      - name: SBOMS_DIR
+        value: $(params.sboms-dir)
+      - name: TRUSTIFICATION_SECRET_NAME
+        value: $(params.trustification-secret-name)
+      - name: FAIL_IF_TRUSTIFICATION_NOT_CONFIGURED
+        value: $(params.fail-if-trustification-not-configured)
+      runAfter:
+      - build-container
+      taskRef:
+        name: upload-sbom-to-trustification
+      workspaces:
+      - name: sboms
+        workspace: workspace
     - name: acs-image-check
       params:
         - name: rox-secret-name
@@ -165,7 +193,7 @@ spec:
         - name: image-digest
           value: $(tasks.build-container.results.IMAGE_DIGEST)
       runAfter:
-        - build-container
+        - upload-sboms-to-trustification
       taskRef:
         name: acs-image-check
     - name: acs-image-scan
@@ -179,7 +207,7 @@ spec:
         - name: image-digest
           value: $(tasks.build-container.results.IMAGE_DIGEST)
       runAfter:
-        - build-container
+        - upload-sboms-to-trustification
       taskRef:
         kind: Task
         name: acs-image-scan
@@ -208,8 +236,6 @@ spec:
           value: $(params.git-url)-gitops
         - name: image
           value: $(tasks.build-container.results.IMAGE_URL)@$(tasks.build-container.results.IMAGE_DIGEST)
-        - name: gitops-auth-secret-name
-          value: $(params.gitops-auth-secret-name)
       runAfter:
         - build-container
       taskRef:
@@ -224,5 +250,7 @@ spec:
   workspaces:
     - name: workspace
     - name: maven-settings
+    - name: gitops-auth
+      soptional: true
     - name: git-auth
       optional: true

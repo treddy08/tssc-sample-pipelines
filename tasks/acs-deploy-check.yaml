@@ -30,11 +30,6 @@ spec:
       default: 'false'
       description: |
         When set to `"true"`, skip verifying the TLS certs of the Central endpoint. Defaults to `"false"`.
-    - name: gitops-auth-secret-name
-      type: string
-      default: gitops-auth-secret
-      description: |
-        Secret of basic-auth type containing credentials to clone the gitops repository.
   volumes:
     - name: repository
       emptyDir: {}
