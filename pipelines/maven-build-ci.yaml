@@ -83,6 +83,19 @@ spec:
     - name: sboms-dir
       default: sboms
       type: string
+    - name: certificate-identity
+      type: string
+    - name: oidc-issuer
+      type: string
+    - name: rekor-url
+      type: string
+      default: http://rekor-server.tssc-tas.svc
+    - name: tuf-mirror
+      type: string
+      default: http://tuf.tssc-tas.svc
+    - name: verify-commit
+      type: string
+      default: 'false'
   results:
     - name: IMAGE_URL
       value: $(tasks.build-container.results.IMAGE_URL)
@@ -123,12 +136,34 @@ spec:
           workspace: workspace
         - name: basic-auth
           workspace: git-auth
+    - name: verify-commit
+      params:
+      - name: certificate-identity
+        value: $(params.certificate-identity)
+      - name: oidc-issuer
+        value: $(params.oidc-issuer)
+      - name: rekor-url
+        value: $(params.rekor-url)
+      - name: tuf-mirror
+        value: $(params.tuf-mirror)
+      runAfter:
+        - clone-repository
+      taskRef:
+        kind: Task
+        name: verify-commit
+      workspaces:
+        - name: repository
+          workspace: workspace
+      when:
+        - input: "$(params.verify-commit)"
+          operator: in
+          values: ["true"]
     - name: package
       params:
       - name: SUBDIRECTORY
         value: source
       runAfter:
-        - clone-repository
+        - verify-commit
       taskRef:
         name: maven
       workspaces:
