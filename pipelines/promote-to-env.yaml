@@ -1,0 +1,133 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: promote-to-env
+spec:
+  params:
+  - description: Source image
+    name: source-image
+    type: string
+  - description: Source tag
+    name: source-image-tag
+    type: string
+  - description: Gitops repo revision
+    name: revision
+    type: string
+  - description: Gitops repo url
+    name: git-url
+    type: string
+  - description: The git target branch
+    name: target-branch
+    type: string
+  - description: The environment to update the tag
+    name: environment
+    type: string
+    default: development
+  - default: github.com/enterprise-contract/config//tekton-slsa3-v0.6
+    description: Enterprise Contract policy to validate against
+    name: ec-policy-configuration
+    type: string
+  - default: "true"
+    description: Should EC violations cause the pipeline to fail?
+    name: ec-strict
+    type: string
+  - default: k8s://$(context.pipelineRun.namespace)/cosign-pub
+    description: The public key that EC should use to verify signatures
+    name: ec-public-key
+    type: string
+  - default: http://rekor-server.tssc-tas.svc
+    description: The Rekor host that EC should use to look up transparency logs
+    name: ec-rekor-host
+    type: string
+  - default: http://tuf.tssc-tas.svc
+    description: The TUF mirror that EC should use
+    name: ec-tuf-mirror
+    type: string
+  - default: tpa-secret
+    description: The name of the Secret that contains Trustification (TPA) configuration
+    name: trustification-secret-name
+    type: string
+  - default: "true"
+    description: Should the pipeline fail when there are SBOMs to upload but Trustification
+      is not properly configured (i.e. the secret is missing or doesn't have all the
+      required keys)?
+    name: fail-if-trustification-not-configured
+    type: string
+  tasks:
+  - name: extract-destination-image-tag
+    taskSpec:
+      results:
+      - name: DESTINATION_IMAGE_TAG
+      steps:
+      - name: extract-tag
+        image: ubi8/ubi-minimal
+        script: |
+          #!/usr/bin/env bash
+          REF=$(params.target-branch)
+          TAG=${REF##*/}
+
+          echo -n $TAG | tee $(results.DESTINATION_IMAGE_TAG.path)
+  - name: gather-images-to-verify
+    params:
+    - name: IMAGE
+      value: $(params.source-image):$(params.source-image-tag)
+    - name: CI_PROJECT_URL
+      value: $(params.git-url)
+    - name: GIT_REVISION
+      value: $(params.revision)
+    taskRef:
+      name: gather-images-to-verify
+  - name: verify-enterprise-contract
+    params:
+    - name: IMAGES
+      value: $(tasks.gather-images-to-verify.results.IMAGES_TO_VERIFY)
+    - name: STRICT
+      value: $(params.ec-strict)
+    - name: POLICY_CONFIGURATION
+      value: $(params.ec-policy-configuration)
+    - name: PUBLIC_KEY
+      value: $(params.ec-public-key)
+    - name: REKOR_HOST
+      value: $(params.ec-rekor-host)
+    - name: TUF_MIRROR
+      value: $(params.ec-tuf-mirror)
+    runAfter:
+    - extract-destination-image-tag
+    - gather-images-to-verify
+    taskRef:
+      name: verify-enterprise-contract
+    when:
+    - input: $(tasks.gather-images-to-verify.results.IMAGES_TO_VERIFY)
+      operator: notin
+      values:
+      - ""
+  - name: copy-image
+    params:
+    - name: SOURCE_IMAGE_URL
+      value: docker://$(params.source-image):$(params.source-image-tag)
+    - name: DESTINATION_IMAGE_URL
+      value: docker://$(params.source-image):$(tasks.extract-destination-image-tag.results.DESTINATION_IMAGE_TAG)
+    - name: SRC_TLS_VERIFY
+      value: 'false'
+    - name: DEST_TLS_VERIFY
+      value: 'false'
+    taskRef:
+      name: skopeo-copy
+    runAfter:
+    - verify-enterprise-contract
+  - name: update-deployment
+    params:
+      - name: gitops-repo-url
+        value: $(params.git-url)-gitops
+      - name: image
+        value: $(params.source-image):$(tasks.extract-destination-image-tag.results.DESTINATION_IMAGE_TAG)
+      - name: environment
+        value: $(params.environment)
+    runAfter:
+      - copy-image
+    taskRef:
+      kind: Task
+      name: update-deployment
+  workspaces:
+  - name: gitops-auth
+    optional: true
