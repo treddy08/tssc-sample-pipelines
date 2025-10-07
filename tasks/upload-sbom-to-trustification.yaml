@@ -30,6 +30,10 @@ spec:
     - supported_cyclonedx_version: If the SBOM uses a higher CycloneDX version,
         `syft convert` to the supported version before uploading.
   params:
+  - name: COMPONENT_NAME
+    description: >-
+      The name of the sbom
+    type: string
   - name: SBOMS_DIR
     default: "."
     description: >-
@@ -65,6 +69,8 @@ spec:
       sizeLimit: 50Mi
   stepTemplate:
     env:
+    - name: COMPONENT_NAME
+      value: $(params.COMPONENT_NAME)
     - name: SBOMS_DIR
       value: $(workspaces.sboms.path)/$(params.SBOMS_DIR)
     - name: HTTP_RETRIES
@@ -246,6 +252,12 @@ spec:
         # This sbom_id is the one created in the gather-sboms step - sha256:${checksum}
         sbom_id="$(basename -s .json "$sbom_path")"
         supported_version_of_sbom="${sbom_path}.supported_version"
+
+        # Inject the component name into the SBOM
+        echo
+        echo "--- Injecting component name ---"
+        jq --arg newname "$COMPONENT_NAME" '.metadata.component.name = $newname' "$supported_version_of_sbom" > /tmp/tmp-sbom.json
+        mv /tmp/tmp-sbom.json "$supported_version_of_sbom"
 
         # Generate URL to the SBOM in TPA and write it to a JSON file to use for eyecatcher
         tpa_url=${bombastic_api_url//sbom/console}

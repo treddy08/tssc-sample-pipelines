@@ -30,6 +30,9 @@ spec:
         - name: workspace
           workspace: workspace
   params:
+    - description: Name of the software component
+      name: component-name
+      type: string
     - description: Source Repository URL
       name: git-url
       type: string
@@ -206,6 +209,8 @@ spec:
           workspace: workspace
     - name: upload-sboms-to-trustification
       params:
+      - name: COMPONENT_NAME
+        value: $(params.component-name)
       - name: SBOMS_DIR
         value: $(params.sboms-dir)
       - name: TRUSTIFICATION_SECRET_NAME
