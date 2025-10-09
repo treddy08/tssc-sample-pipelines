@@ -30,6 +30,11 @@ spec:
       default: 'false'
       description: |
         When set to `"true"`, skip verifying the TLS certs of the Central endpoint. Defaults to `"false"`.
+    - name: grpc-enforce-alpn-enabled
+      type: string
+      default: 'FALSE'
+      description: |
+        When set to `"true"`, enforce ALPN for GRPC. Defaults to `"false"`.
   volumes:
     - name: repository
       emptyDir: {}
@@ -68,6 +73,8 @@ spec:
           value: $(workspaces.gitops-auth.bound)
         - name: WORKSPACE_GITOPS_AUTH_DIRECTORY_PATH
           value: $(workspaces.gitops-auth.path)
+        - name: GRPC_ENFORCE_ALPN_ENABLED
+          value: $(params.grpc-enforce-alpn-enabled)
       script: |
         #!/usr/bin/env bash
         set +x

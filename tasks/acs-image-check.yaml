@@ -32,6 +32,11 @@ spec:
       type: string
       description: |
         Digest of the image
+    - name: grpc-enforce-alpn-enabled
+      type: string
+      default: 'FALSE'
+      description: |
+        When set to `"true"`, enforce ALPN for GRPC. Defaults to `"false"`.
   volumes:
     - name: rox-secret
       secret:
@@ -66,6 +71,8 @@ spec:
           value: $(params.image)
         - name: PARAM_IMAGE_DIGEST
           value: $(params.image-digest)
+        - name: GRPC_ENFORCE_ALPN_ENABLED
+          value: $(params.grpc-enforce-alpn-enabled)
       onError: continue
       script: |
         #!/usr/bin/env bash
