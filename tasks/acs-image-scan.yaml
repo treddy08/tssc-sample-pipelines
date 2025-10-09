@@ -33,11 +33,6 @@ spec:
       description: |
         When set to `"true"`, skip verifying the TLS certs of the Central
         endpoint.  Defaults to `"false"`.
-    - name: grpc-enforce-alpn-enabled
-      type: string
-      default: 'FALSE'
-      description: |
-        When set to `"true"`, enforce ALPN for GRPC. Defaults to `"false"`.
   results:
     - name: SCAN_OUTPUT
       description: Summary of the roxctl scan
@@ -78,8 +73,6 @@ spec:
           value: $(params.image)
         - name: PARAM_IMAGE_DIGEST
           value: $(params.image-digest)
-        - name: GRPC_ENFORCE_ALPN_ENABLED
-          value: $(params.grpc-enforce-alpn-enabled)
       script: |
         #!/usr/bin/env bash
         set +x
