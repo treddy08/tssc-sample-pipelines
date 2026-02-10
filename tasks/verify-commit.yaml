@@ -15,7 +15,7 @@ spec:
   - description: OIDC issuer
     name: oidc-issuer
     type: string
-    default: https://sso.<domain>/realms/trusted-artifact-signer
+    default: https://sso.<domain>/realms/tssc-iam
   - description: Rekor URL
     name: rekor-url
     type: string
