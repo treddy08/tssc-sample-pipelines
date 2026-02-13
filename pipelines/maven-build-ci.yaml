@@ -225,6 +225,7 @@ spec:
       - name: sboms
         workspace: workspace
     - name: acs-image-check
+      retries: 3
       params:
         - name: rox-secret-name
           value: $(params.stackrox-secret)
@@ -239,6 +240,7 @@ spec:
       taskRef:
         name: acs-image-check
     - name: acs-image-scan
+      retries: 3
       params:
         - name: rox-secret-name
           value: $(params.stackrox-secret)
@@ -254,6 +256,7 @@ spec:
         kind: Task
         name: acs-image-scan
     - name: acs-deploy-check
+      retries: 3
       params:
         - name: rox-secret-name
           value: $(params.stackrox-secret)

@@ -66,6 +66,8 @@ spec:
           value: $(params.image)
         - name: PARAM_IMAGE_DIGEST
           value: $(params.image-digest)
+        - name: GRPC_ENFORCE_ALPN_ENABLED
+          value: 'false'
       onError: continue
       script: |
         #!/usr/bin/env bash

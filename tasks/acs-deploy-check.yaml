@@ -68,6 +68,8 @@ spec:
           value: $(workspaces.gitops-auth.bound)
         - name: WORKSPACE_GITOPS_AUTH_DIRECTORY_PATH
           value: $(workspaces.gitops-auth.path)
+        - name: GRPC_ENFORCE_ALPN_ENABLED
+          value: 'false'
       script: |
         #!/usr/bin/env bash
         set +x

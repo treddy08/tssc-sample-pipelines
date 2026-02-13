@@ -102,19 +102,24 @@ spec:
         BUILDAH_ARGS+=("--build-arg=$build_arg")
       done
 
-      # Build the image
-      buildah build \
-        "${BUILDAH_ARGS[@]}" \
-        --tls-verify=$TLSVERIFY \
-        --ulimit nofile=4096:4096 \
-        -f "$dockerfile_path" -t $IMAGE $SOURCE_CODE_DIR/$CONTEXT
+      MAX_RETRIES=5
+      COUNT=0
 
-      # Push the image
-      buildah push \
-        --tls-verify=$TLSVERIFY \
-        --retry=5 \
-        --digestfile /tmp/files/image-digest $IMAGE \
-        docker://$IMAGE
+      until [ $COUNT -ge $MAX_RETRIES ]
+      do
+        buildah build \
+          "${BUILDAH_ARGS[@]}" \
+          --tls-verify=$TLSVERIFY \
+          --ulimit nofile=4096:4096 \
+          -f "$dockerfile_path" -t $IMAGE $SOURCE_CODE_DIR/$CONTEXT
+
+        if buildah push --tls-verify=$TLSVERIFY --digestfile /tmp/files/image-digest $IMAGE docker://$IMAGE; then
+          break
+        fi
+
+        COUNT=$((COUNT+1))
+        sleep 5
+      done
 
       # Push the image to a unique tag to avoid race conditions
       buildah push \
