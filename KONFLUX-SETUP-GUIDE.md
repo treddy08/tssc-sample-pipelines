@@ -317,11 +317,12 @@ oc get crd konfluxes.konflux.konflux-ci.dev
 oc explain konflux.spec
 
 # Create Konflux instance
+# IMPORTANT: Must be named 'konflux' - only one instance allowed per cluster
 cat <<EOF | oc apply -f -
 apiVersion: konflux.konflux-ci.dev/v1alpha1
 kind: Konflux
 metadata:
-  name: konflux-instance
+  name: konflux  # MUST be exactly 'konflux' (singleton)
 spec:
   # Default configuration - deploys all Konflux controllers
   # Controllers: application-service, integration-service, release-service, etc.
@@ -332,7 +333,7 @@ echo "Waiting for Konflux instance to deploy..."
 sleep 120
 
 # Check Konflux instance status
-oc get konflux konflux-instance -o yaml
+oc get konflux konflux -o yaml
 
 # Verify Konflux controllers are running
 # Controllers may be deployed in different namespaces
