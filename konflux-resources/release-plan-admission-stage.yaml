@@ -1,21 +1,20 @@
 # Konflux ReleasePlanAdmission for STAGE Environment
-# This goes in the my-java-app-stage namespace (NOT tssc-app-ci)
-# It accepts releases FROM tssc-app-ci
+# This goes in the tssc-app-stage namespace (SHARED, NOT per-app)
+# It accepts releases FROM tssc-app-ci for ALL applications
 
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlanAdmission
 metadata:
   name: accept-releases
-  namespace: my-java-app-stage  # CHANGE THIS: Your runtime namespace for stage
+  namespace: tssc-app-stage  # FIXED: Shared stage namespace
   annotations:
     description: "Accept releases from tssc-app-ci to stage environment"
 spec:
   # Accept releases from CI namespace
   origin: tssc-app-ci
 
-  # Which applications can release here
-  applications:
-    - my-java-app  # MUST MATCH: Application name
+  # NO applications filter - accepts ALL apps (multi-tenant)
+  # applications field is OMITTED intentionally
 
   # Environment identifier
   environment: stage
@@ -37,16 +36,15 @@ spec:
       strict: "true"  # Block if policy fails in stage
 
 ---
-# How to apply:
-# 1. Edit the namespace to match your stage runtime namespace
-# 2. Make sure application name matches
-# 3. Apply to the STAGE namespace:
-#    oc apply -f release-plan-admission-stage.yaml -n my-java-app-stage
+# How to apply (ONE-TIME SETUP - not per app):
+# 1. Apply to the SHARED stage namespace:
+#    oc apply -f release-plan-admission-stage.yaml -n tssc-app-stage
 #
-# 4. Verify:
-#    oc get releaseplanadmission accept-releases -n my-java-app-stage
+# 2. Verify:
+#    oc get releaseplanadmission accept-releases -n tssc-app-stage
 #
 # Important:
-# - This MUST be in the runtime namespace (my-java-app-stage)
-# - NOT in tssc-app-ci
-# - Notice strict: "true" - stage blocks bad images
+# - This is created ONCE for the shared environment
+# - NOT per-application (accepts ALL apps from tssc-app-ci)
+# - All applications deploy to tssc-app-stage namespace
+# - strict: "true" - stage blocks images with policy violations

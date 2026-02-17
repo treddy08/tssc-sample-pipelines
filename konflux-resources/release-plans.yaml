@@ -1,24 +1,25 @@
 # Konflux ReleasePlan Resources
-# These define how Snapshots are promoted to environments
-# ALL THREE go in the tssc-app-ci namespace
+# These define how Snapshots are promoted to shared environments
+# ALL THREE go in the tssc-app-ci namespace (one set PER APP)
 
 ---
-# ReleasePlan for Dev Environment
+# ReleasePlan for Development Environment
 # Auto-releases after integration tests pass
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlan
 metadata:
-  name: release-to-dev
+  name: my-java-app-release-to-development  # CHANGE: app-name-release-to-development
   namespace: tssc-app-ci  # All ReleasePlans go in CI namespace
   labels:
     release.appstudio.openshift.io/auto-release: "true"  # Automatic promotion
+    app.kubernetes.io/part-of: my-java-app  # CHANGE: Your app name
   annotations:
-    description: "Automatically release to dev after tests pass"
+    description: "Automatically release my-java-app to development after tests pass"
 spec:
   application: my-java-app  # MUST MATCH: Application name
 
-  # Target namespace (runtime namespace, not CI namespace)
-  target: my-java-app-dev  # CHANGE THIS: Your app name + "-dev"
+  # Target namespace (SHARED environment namespace)
+  target: tssc-app-development  # FIXED: Shared development namespace
 
   # Pipeline runs in tssc-app-ci namespace
   pipelineRef:
@@ -30,21 +31,22 @@ spec:
 
 ---
 # ReleasePlan for Stage Environment
-# Auto-releases after dev deployment succeeds
+# Auto-releases after development deployment succeeds
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlan
 metadata:
-  name: release-to-stage
+  name: my-java-app-release-to-stage  # CHANGE: app-name-release-to-stage
   namespace: tssc-app-ci  # All ReleasePlans go in CI namespace
   labels:
     release.appstudio.openshift.io/auto-release: "true"  # Automatic promotion
+    app.kubernetes.io/part-of: my-java-app  # CHANGE: Your app name
   annotations:
-    description: "Automatically release to stage after dev"
+    description: "Automatically release my-java-app to stage after development"
 spec:
   application: my-java-app  # MUST MATCH: Application name
 
-  # Target namespace
-  target: my-java-app-stage  # CHANGE THIS: Your app name + "-stage"
+  # Target namespace (SHARED environment namespace)
+  target: tssc-app-stage  # FIXED: Shared stage namespace
 
   # Pipeline runs in tssc-app-ci namespace
   pipelineRef:
@@ -55,22 +57,23 @@ spec:
   serviceAccount: release-service-account
 
 ---
-# ReleasePlan for Prod Environment
+# ReleasePlan for Production Environment
 # Manual release only (requires creating Release CR)
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlan
 metadata:
-  name: release-to-prod
+  name: my-java-app-release-to-prod  # CHANGE: app-name-release-to-prod
   namespace: tssc-app-ci  # All ReleasePlans go in CI namespace
   labels:
     release.appstudio.openshift.io/auto-release: "false"  # Manual only!
+    app.kubernetes.io/part-of: my-java-app  # CHANGE: Your app name
   annotations:
-    description: "Manual release to production (requires approval)"
+    description: "Manual release of my-java-app to production (requires approval)"
 spec:
   application: my-java-app  # MUST MATCH: Application name
 
-  # Target namespace
-  target: my-java-app-prod  # CHANGE THIS: Your app name + "-prod"
+  # Target namespace (SHARED environment namespace)
+  target: tssc-app-prod  # FIXED: Shared production namespace
 
   # Pipeline runs in tssc-app-ci namespace
   pipelineRef:
@@ -82,16 +85,21 @@ spec:
 
 ---
 # How to apply:
-# 1. Edit the 'target' fields to match your app name
-# 2. Make sure application name matches application.yaml
-# 3. Apply to cluster:
+# 1. Edit the 'name' fields to include your app name (app-name-release-to-*)
+# 2. Edit the 'application' field to match your application.yaml
+# 3. Edit the app.kubernetes.io/part-of label to match your app name
+# 4. KEEP target namespaces as shown (shared environments)
+# 5. Apply to cluster:
 #    oc apply -f release-plans.yaml -n tssc-app-ci
 #
-# 4. Verify all three were created:
-#    oc get releaseplans -n tssc-app-ci
+# 6. Verify all three were created:
+#    oc get releaseplans -n tssc-app-ci -l app.kubernetes.io/part-of=my-java-app
 #
 # Expected output:
-# NAME                AUTO-RELEASE   APPLICATION
-# release-to-dev      true           my-java-app
-# release-to-stage    true           my-java-app
-# release-to-prod     false          my-java-app
+# NAME                                  AUTO-RELEASE   TARGET
+# my-java-app-release-to-development    true           tssc-app-development
+# my-java-app-release-to-stage          true           tssc-app-stage
+# my-java-app-release-to-prod           false          tssc-app-prod
+#
+# NOTE: Multiple applications will have their own sets of ReleasePlans,
+#       but all target the same shared environment namespaces.

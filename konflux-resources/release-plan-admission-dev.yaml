@@ -1,24 +1,23 @@
-# Konflux ReleasePlanAdmission for DEV Environment
-# This goes in the my-java-app-dev namespace (NOT tssc-app-ci)
-# It accepts releases FROM tssc-app-ci
+# Konflux ReleasePlanAdmission for DEVELOPMENT Environment
+# This goes in the tssc-app-development namespace (SHARED, NOT per-app)
+# It accepts releases FROM tssc-app-ci for ALL applications
 
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlanAdmission
 metadata:
   name: accept-releases
-  namespace: my-java-app-dev  # CHANGE THIS: Your runtime namespace for dev
+  namespace: tssc-app-development  # FIXED: Shared development namespace
   annotations:
-    description: "Accept releases from tssc-app-ci to dev environment"
+    description: "Accept releases from tssc-app-ci to development environment"
 spec:
   # Accept releases from CI namespace
   origin: tssc-app-ci
 
-  # Which applications can release here
-  applications:
-    - my-java-app  # MUST MATCH: Application name
+  # NO applications filter - accepts ALL apps (multi-tenant)
+  # applications field is OMITTED intentionally
 
   # Environment identifier
-  environment: dev
+  environment: development
 
   # Pipeline runs in tssc-app-ci (cross-namespace reference)
   pipelineRef:
@@ -31,22 +30,21 @@ spec:
   # Enterprise Contract policy configuration
   data:
     enterpriseContract:
-      # Policy for dev (relaxed - allows warnings)
+      # Policy for development (relaxed - just warnings)
       policy: "github.com/enterprise-contract/config//slsa3"
       publicKey: "k8s://openshift-pipelines/signing-secrets"
-      strict: "false"  # Warn but don't block in dev
+      strict: "false"  # Don't block, just warn in development
 
 ---
-# How to apply:
-# 1. Edit the namespace to match your dev runtime namespace
-# 2. Make sure application name matches
-# 3. Apply to the DEV namespace:
-#    oc apply -f release-plan-admission-dev.yaml -n my-java-app-dev
+# How to apply (ONE-TIME SETUP - not per app):
+# 1. Apply to the SHARED development namespace:
+#    oc apply -f release-plan-admission-dev.yaml -n tssc-app-development
 #
-# 4. Verify:
-#    oc get releaseplanadmission accept-releases -n my-java-app-dev
+# 2. Verify:
+#    oc get releaseplanadmission accept-releases -n tssc-app-development
 #
 # Important:
-# - This MUST be in the runtime namespace (my-java-app-dev)
-# - NOT in tssc-app-ci
-# - It references the pipeline in tssc-app-ci (cross-namespace)
+# - This is created ONCE for the shared environment
+# - NOT per-application (accepts ALL apps from tssc-app-ci)
+# - All applications deploy to tssc-app-development namespace
+# - strict: "false" - development allows images with policy warnings

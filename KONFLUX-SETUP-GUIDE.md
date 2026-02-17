@@ -85,24 +85,26 @@ This repository contains:
 
 ## Architecture
 
-### Centralized CI/CD Pattern
+### Centralized CI/CD with Shared Environment Namespaces
+
+**Multi-Tenancy Model**: All applications created from the Developer Hub template deploy to shared environment namespaces.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ tssc-app-ci (CI/CD Namespace)                                    │
 │                                                                   │
-│ ALL pipelines run here:                                         │
+│ ALL pipelines for ALL apps run here:                            │
 │  • maven-build-ci-konflux (Build Pipeline)                      │
 │  • release-pipeline (Release Pipeline)                          │
 │  • integration-tests (Test Pipeline)                            │
 │  • All build and release tasks                                  │
 │                                                                   │
-│ Konflux Resources:                                              │
-│  • Application CR                                               │
-│  • Component CR                                                 │
+│ Konflux Resources (per app):                                    │
+│  • Application CR (app1, app2, app3, ...)                       │
+│  • Component CR (per app)                                       │
 │  • Snapshots (auto-created after builds)                        │
-│  • IntegrationTestScenario                                      │
-│  • ReleasePlan → dev (auto-release: true)                       │
+│  • IntegrationTestScenario (per app)                            │
+│  • ReleasePlan → development (auto-release: true)               │
 │  • ReleasePlan → stage (auto-release: true)                     │
 │  • ReleasePlan → prod (auto-release: false)                     │
 │  • Release CRs (auto-created or manual)                         │
@@ -110,26 +112,37 @@ This repository contains:
                               ↓
         ┌─────────────────────┼─────────────────────┐
         ↓                     ↓                     ↓
-┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐
-│ my-java-app-dev   │ │ my-java-app-stage │ │ my-java-app-prod  │
-│                   │ │                   │ │                   │
-│ Runtime ONLY:     │ │ Runtime ONLY:     │ │ Runtime ONLY:     │
-│ • ReleasePlan     │ │ • ReleasePlan     │ │ • ReleasePlan     │
-│   Admission       │ │   Admission       │ │   Admission       │
-│ • Deployment      │ │ • Deployment      │ │ • Deployment      │
-│ • Service         │ │ • Service         │ │ • Service         │
-│ • Route           │ │ • Route           │ │ • Route           │
-│ • ConfigMaps      │ │ • ConfigMaps      │ │ • ConfigMaps      │
-│ • Secrets         │ │ • Secrets         │ │ • Secrets         │
-│                   │ │                   │ │                   │
-│ NO pipelines!     │ │ NO pipelines!     │ │ NO pipelines!     │
-└───────────────────┘ └───────────────────┘ └───────────────────┘
+┌───────────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ tssc-app-development  │ │ tssc-app-stage  │ │ tssc-app-prod   │
+│                       │ │                 │ │                 │
+│ SHARED Environment:   │ │ SHARED Env:     │ │ SHARED Env:     │
+│ • ReleasePlan         │ │ • ReleasePlan   │ │ • ReleasePlan   │
+│   Admission (one)     │ │   Admission     │ │   Admission     │
+│                       │ │                 │ │                 │
+│ Multiple Apps:        │ │ Multiple Apps:  │ │ Multiple Apps:  │
+│ • app1-deployment     │ │ • app1-deploy   │ │ • app1-deploy   │
+│ • app1-service        │ │ • app1-service  │ │ • app1-service  │
+│ • app1-route          │ │ • app1-route    │ │ • app1-route    │
+│ • app2-deployment     │ │ • app2-deploy   │ │ • app2-deploy   │
+│ • app2-service        │ │ • app2-service  │ │ • app2-service  │
+│ • app2-route          │ │ • app2-route    │ │ • app2-route    │
+│ • ...                 │ │ • ...           │ │ • ...           │
+│                       │ │                 │ │                 │
+│ NO pipelines!         │ │ NO pipelines!   │ │ NO pipelines!   │
+└───────────────────────┘ └─────────────────┘ └─────────────────┘
 ```
+
+**Key Points:**
+- ✅ One set of environment namespaces for ALL applications
+- ✅ Developer Hub template bootstraps new apps into existing namespaces
+- ✅ Each app gets its own Deployment/Service/Route within the shared namespace
+- ✅ ReleasePlanAdmission accepts releases from ALL apps (not app-specific)
+- ✅ RBAC configured once per namespace (not per app)
 
 ### Complete Flow
 
 ```
-Developer: git push
+Developer: git push (to any app repo)
   ↓
 Build Pipeline (tssc-app-ci)
   ↓
@@ -141,21 +154,21 @@ Konflux creates Snapshot (tssc-app-ci)
   ↓
 Integration Tests (tssc-app-ci)
   ↓
-Auto-Release to Dev (tssc-app-ci)
+Auto-Release to Development (tssc-app-ci)
   EC Policy: slsa3, strict=false (warn only)
   Copy: sha256:abc123... → tag:dev
-  Deploy: my-java-app-dev namespace
+  Deploy: tssc-app-development namespace
   ↓
 Auto-Release to Stage (tssc-app-ci)
   EC Policy: slsa3, strict=true (enforce)
   Copy: sha256:abc123... → tag:stage
-  Deploy: my-java-app-stage namespace
+  Deploy: tssc-app-stage namespace
   ↓
 Manual Release to Prod (tssc-app-ci)
   Ops creates Release CR
   EC Policy: slsa3-strict, strict=true (strictest)
   Copy: sha256:abc123... → tag:prod
-  Deploy: my-java-app-prod namespace
+  Deploy: tssc-app-prod namespace
 ```
 
 ---
@@ -292,75 +305,88 @@ oc get pods -n openshift-pipelines
 
 ---
 
-### Step 2: Create Namespaces
+### Step 2: Create Shared Environment Namespaces
 
-Set your application name and create all required namespaces:
+Create the shared environment namespaces. This is a **one-time setup** - all applications from Developer Hub will deploy to these same namespaces.
 
 ```bash
-# CHANGE THIS to your actual application name
-export APP_NAME="my-java-app"
+echo "Creating shared TSSC environment namespaces..."
+echo "These namespaces will host ALL applications created from Developer Hub template:"
+echo "  - tssc-app-ci (CI/CD namespace - all pipelines)"
+echo "  - tssc-app-development (shared development environment)"
+echo "  - tssc-app-stage (shared staging environment)"
+echo "  - tssc-app-prod (shared production environment)"
 
-# Verify the name
-echo "Application name: ${APP_NAME}"
-echo "This will create namespaces:"
-echo "  - tssc-app-ci (CI/CD namespace)"
-echo "  - ${APP_NAME}-dev (dev runtime)"
-echo "  - ${APP_NAME}-stage (stage runtime)"
-echo "  - ${APP_NAME}-prod (prod runtime)"
-
-# Create CI namespace (if it doesn't exist)
+# Create CI/CD namespace
 oc create namespace tssc-app-ci
 
-# Create runtime namespaces
-oc create namespace ${APP_NAME}-dev
-oc create namespace ${APP_NAME}-stage
-oc create namespace ${APP_NAME}-prod
+# Create shared environment namespaces
+oc create namespace tssc-app-development
+oc create namespace tssc-app-stage
+oc create namespace tssc-app-prod
 
 # Label namespaces for easier identification
-oc label namespace tssc-app-ci environment=ci app.kubernetes.io/part-of=konflux-ci
-oc label namespace ${APP_NAME}-dev environment=dev app.kubernetes.io/part-of=${APP_NAME}
-oc label namespace ${APP_NAME}-stage environment=stage app.kubernetes.io/part-of=${APP_NAME}
-oc label namespace ${APP_NAME}-prod environment=prod app.kubernetes.io/part-of=${APP_NAME}
+oc label namespace tssc-app-ci \
+  environment=ci \
+  app.kubernetes.io/part-of=tssc \
+  konflux.dev/multi-tenant=true
+
+oc label namespace tssc-app-development \
+  environment=development \
+  app.kubernetes.io/part-of=tssc \
+  konflux.dev/multi-tenant=true
+
+oc label namespace tssc-app-stage \
+  environment=stage \
+  app.kubernetes.io/part-of=tssc \
+  konflux.dev/multi-tenant=true
+
+oc label namespace tssc-app-prod \
+  environment=production \
+  app.kubernetes.io/part-of=tssc \
+  konflux.dev/multi-tenant=true
 
 # Verify namespaces created
-oc get namespaces | grep -E "tssc-app-ci|${APP_NAME}"
+oc get namespaces | grep tssc-app
 ```
 
 Expected output:
 ```
-tssc-app-ci        Active   1m
-my-java-app-dev    Active   1m
-my-java-app-stage  Active   1m
-my-java-app-prod   Active   1m
+tssc-app-ci            Active   1m
+tssc-app-development   Active   1m
+tssc-app-stage         Active   1m
+tssc-app-prod          Active   1m
 ```
+
+**Important Note:** These namespaces are shared across ALL applications. When you create a new application from the Developer Hub template, it will deploy to these existing namespaces alongside other applications.
 
 ---
 
 ### Step 3: Setup RBAC (Cross-Namespace Permissions)
 
-The release pipeline runs in `tssc-app-ci` but needs to deploy to runtime namespaces.
+The release pipeline runs in `tssc-app-ci` but needs to deploy to the shared environment namespaces. This is a **one-time setup** for all applications.
 
 ```bash
 # Create service account in CI namespace
 oc create serviceaccount release-service-account -n tssc-app-ci
 
-# Grant permissions to deploy to dev
+# Grant permissions to deploy to development environment
 oc create rolebinding release-deployer \
   --serviceaccount=tssc-app-ci:release-service-account \
   --clusterrole=edit \
-  -n ${APP_NAME}-dev
+  -n tssc-app-development
 
-# Grant permissions to deploy to stage
+# Grant permissions to deploy to stage environment
 oc create rolebinding release-deployer \
   --serviceaccount=tssc-app-ci:release-service-account \
   --clusterrole=edit \
-  -n ${APP_NAME}-stage
+  -n tssc-app-stage
 
-# Grant permissions to deploy to prod
+# Grant permissions to deploy to prod environment
 oc create rolebinding release-deployer \
   --serviceaccount=tssc-app-ci:release-service-account \
   --clusterrole=edit \
-  -n ${APP_NAME}-prod
+  -n tssc-app-prod
 
 # If you have registry credentials, link them
 # oc create secret docker-registry quay-credentials \
@@ -379,11 +405,13 @@ oc create rolebinding release-deployer \
 
 # Verify RBAC setup
 echo "Verifying RBAC configuration..."
-oc get rolebindings -n ${APP_NAME}-dev | grep release-deployer
-oc get rolebindings -n ${APP_NAME}-stage | grep release-deployer
-oc get rolebindings -n ${APP_NAME}-prod | grep release-deployer
+oc get rolebindings -n tssc-app-development | grep release-deployer
+oc get rolebindings -n tssc-app-stage | grep release-deployer
+oc get rolebindings -n tssc-app-prod | grep release-deployer
 oc get serviceaccount release-service-account -n tssc-app-ci
 ```
+
+**Note:** This RBAC setup allows the release-service-account to deploy ANY application to the shared environments. This is intentional for the multi-tenant model.
 
 ---
 
@@ -523,21 +551,24 @@ oc get integrationtestscenario integration-tests -n tssc-app-ci
 
 #### 5.4: Apply ReleasePlans (All 3)
 
+**Note:** Each application needs its own set of ReleasePlans, but they all target the same shared environment namespaces.
+
 ```bash
-# Create ReleasePlan for Dev (auto-release)
+# Create ReleasePlan for Development (auto-release)
 cat <<EOF | oc apply -f -
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlan
 metadata:
-  name: release-to-dev
+  name: ${APP_NAME}-release-to-development
   namespace: tssc-app-ci
   labels:
     release.appstudio.openshift.io/auto-release: "true"
+    app.kubernetes.io/part-of: ${APP_NAME}
   annotations:
-    description: "Automatically release to dev after tests pass"
+    description: "Automatically release ${APP_NAME} to development after tests pass"
 spec:
   application: ${APP_NAME}
-  target: ${APP_NAME}-dev
+  target: tssc-app-development
   pipelineRef:
     name: release-pipeline
     namespace: tssc-app-ci
@@ -549,15 +580,16 @@ cat <<EOF | oc apply -f -
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlan
 metadata:
-  name: release-to-stage
+  name: ${APP_NAME}-release-to-stage
   namespace: tssc-app-ci
   labels:
     release.appstudio.openshift.io/auto-release: "true"
+    app.kubernetes.io/part-of: ${APP_NAME}
   annotations:
-    description: "Automatically release to stage after dev"
+    description: "Automatically release ${APP_NAME} to stage after development"
 spec:
   application: ${APP_NAME}
-  target: ${APP_NAME}-stage
+  target: tssc-app-stage
   pipelineRef:
     name: release-pipeline
     namespace: tssc-app-ci
@@ -569,15 +601,16 @@ cat <<EOF | oc apply -f -
 apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlan
 metadata:
-  name: release-to-prod
+  name: ${APP_NAME}-release-to-prod
   namespace: tssc-app-ci
   labels:
     release.appstudio.openshift.io/auto-release: "false"
+    app.kubernetes.io/part-of: ${APP_NAME}
   annotations:
-    description: "Manual release to production (requires approval)"
+    description: "Manual release of ${APP_NAME} to production (requires approval)"
 spec:
   application: ${APP_NAME}
-  target: ${APP_NAME}-prod
+  target: tssc-app-prod
   pipelineRef:
     name: release-pipeline
     namespace: tssc-app-ci
@@ -585,20 +618,22 @@ spec:
 EOF
 
 # Verify all three ReleasePlans
-oc get releaseplans -n tssc-app-ci
+oc get releaseplans -n tssc-app-ci -l app.kubernetes.io/part-of=${APP_NAME}
 ```
 
 Expected output:
 ```
-NAME                AUTO-RELEASE   TARGET
-release-to-dev      true           my-java-app-dev
-release-to-stage    true           my-java-app-stage
-release-to-prod     false          my-java-app-prod
+NAME                                  AUTO-RELEASE   TARGET
+my-java-app-release-to-development    true           tssc-app-development
+my-java-app-release-to-stage          true           tssc-app-stage
+my-java-app-release-to-prod           false          tssc-app-prod
 ```
 
 #### 5.5: Apply ReleasePlanAdmissions (One per Environment)
 
-**Dev ReleasePlanAdmission:**
+**IMPORTANT:** ReleasePlanAdmissions are created **once per environment namespace** and accept releases from ALL applications. This is a one-time setup, not per-app.
+
+**Development Environment ReleasePlanAdmission:**
 
 ```bash
 cat <<EOF | oc apply -f -
@@ -606,14 +641,13 @@ apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlanAdmission
 metadata:
   name: accept-releases
-  namespace: ${APP_NAME}-dev
+  namespace: tssc-app-development
   annotations:
-    description: "Accept releases from tssc-app-ci to dev environment"
+    description: "Accept releases from tssc-app-ci to development environment"
 spec:
   origin: tssc-app-ci
-  applications:
-    - ${APP_NAME}
-  environment: dev
+  # NO applications filter - accepts releases from ALL apps
+  environment: development
   pipelineRef:
     name: release-pipeline
     namespace: tssc-app-ci
@@ -622,14 +656,14 @@ spec:
     enterpriseContract:
       policy: "github.com/enterprise-contract/config//slsa3"
       publicKey: "k8s://openshift-pipelines/signing-secrets"
-      strict: "false"
+      strict: "false"  # Warn only in development
 EOF
 
 # Verify
-oc get releaseplanadmission accept-releases -n ${APP_NAME}-dev
+oc get releaseplanadmission accept-releases -n tssc-app-development
 ```
 
-**Stage ReleasePlanAdmission:**
+**Stage Environment ReleasePlanAdmission:**
 
 ```bash
 cat <<EOF | oc apply -f -
@@ -637,13 +671,12 @@ apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlanAdmission
 metadata:
   name: accept-releases
-  namespace: ${APP_NAME}-stage
+  namespace: tssc-app-stage
   annotations:
     description: "Accept releases from tssc-app-ci to stage environment"
 spec:
   origin: tssc-app-ci
-  applications:
-    - ${APP_NAME}
+  # NO applications filter - accepts releases from ALL apps
   environment: stage
   pipelineRef:
     name: release-pipeline
@@ -653,14 +686,14 @@ spec:
     enterpriseContract:
       policy: "github.com/enterprise-contract/config//slsa3"
       publicKey: "k8s://openshift-pipelines/signing-secrets"
-      strict: "true"
+      strict: "true"  # Enforce in stage
 EOF
 
 # Verify
-oc get releaseplanadmission accept-releases -n ${APP_NAME}-stage
+oc get releaseplanadmission accept-releases -n tssc-app-stage
 ```
 
-**Prod ReleasePlanAdmission:**
+**Production Environment ReleasePlanAdmission:**
 
 ```bash
 cat <<EOF | oc apply -f -
@@ -668,14 +701,13 @@ apiVersion: appstudio.redhat.com/v1alpha1
 kind: ReleasePlanAdmission
 metadata:
   name: accept-releases
-  namespace: ${APP_NAME}-prod
+  namespace: tssc-app-prod
   annotations:
     description: "Accept releases from tssc-app-ci to production environment"
 spec:
   origin: tssc-app-ci
-  applications:
-    - ${APP_NAME}
-  environment: prod
+  # NO applications filter - accepts releases from ALL apps
+  environment: production
   pipelineRef:
     name: release-pipeline
     namespace: tssc-app-ci
@@ -684,21 +716,23 @@ spec:
     enterpriseContract:
       policy: "github.com/enterprise-contract/config//slsa3-strict"
       publicKey: "k8s://openshift-pipelines/signing-secrets"
-      strict: "true"
+      strict: "true"  # Strictest enforcement in production
 EOF
 
 # Verify
-oc get releaseplanadmission accept-releases -n ${APP_NAME}-prod
+oc get releaseplanadmission accept-releases -n tssc-app-prod
 ```
 
 **Verify all three:**
 
 ```bash
 echo "Checking ReleasePlanAdmissions in all environments..."
-oc get releaseplanadmission -n ${APP_NAME}-dev
-oc get releaseplanadmission -n ${APP_NAME}-stage
-oc get releaseplanadmission -n ${APP_NAME}-prod
+oc get releaseplanadmission -n tssc-app-development
+oc get releaseplanadmission -n tssc-app-stage
+oc get releaseplanadmission -n tssc-app-prod
 ```
+
+**Note:** These ReleasePlanAdmissions do not filter by application name, so they will accept releases for ANY application from tssc-app-ci. This is intentional for the shared environment model.
 
 ---
 
@@ -846,15 +880,15 @@ oc get releases -n tssc-app-ci | grep stage
 
 ```bash
 # Check what's deployed in dev
-oc get pods -n ${APP_NAME}-dev
-oc get deployment -n ${APP_NAME}-dev -o yaml | grep image:
+oc get pods -n tssc-app-development
+oc get deployment -n tssc-app-development -o yaml | grep image:
 
 # Check what's deployed in stage
-oc get pods -n ${APP_NAME}-stage
-oc get deployment -n ${APP_NAME}-stage -o yaml | grep image:
+oc get pods -n tssc-app-stage
+oc get deployment -n tssc-app-stage -o yaml | grep image:
 
 # Prod should be empty (no auto-release)
-oc get pods -n ${APP_NAME}-prod
+oc get pods -n tssc-app-prod
 ```
 
 ---
@@ -913,13 +947,13 @@ oc describe snapshot <name> -n tssc-app-ci
 
 ```bash
 # Dev environment
-oc get deployment -n ${APP_NAME}-dev -o jsonpath='{.items[0].spec.template.spec.containers[0].image}'
+oc get deployment -n tssc-app-development -o jsonpath='{.items[0].spec.template.spec.containers[0].image}'
 
 # Stage environment
-oc get deployment -n ${APP_NAME}-stage -o jsonpath='{.items[0].spec.template.spec.containers[0].image}'
+oc get deployment -n tssc-app-stage -o jsonpath='{.items[0].spec.template.spec.containers[0].image}'
 
 # Prod environment
-oc get deployment -n ${APP_NAME}-prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}'
+oc get deployment -n tssc-app-prod -o jsonpath='{.items[0].spec.template.spec.containers[0].image}'
 ```
 
 ---
@@ -965,8 +999,8 @@ oc get release -n tssc-app-ci -w
 oc get pipelineruns -n tssc-app-ci -w
 
 # 7. Verify production deployment
-oc get pods -n ${APP_NAME}-prod
-oc get deployment -n ${APP_NAME}-prod -o yaml | grep image:
+oc get pods -n tssc-app-prod
+oc get deployment -n tssc-app-prod -o yaml | grep image:
 ```
 
 ### Rollback
@@ -975,7 +1009,7 @@ To rollback to a previous version:
 
 ```bash
 # 1. Find previous releases
-oc get releases -n tssc-app-ci -l release.appstudio.io/target=${APP_NAME}-prod \
+oc get releases -n tssc-app-ci -l release.appstudio.io/target=tssc-app-prod \
   --sort-by=.metadata.creationTimestamp
 
 # 2. Get the snapshot from previous successful release
@@ -1087,14 +1121,14 @@ RELEASE_PIPELINERUN=$(oc get pipelineruns -n tssc-app-ci \
 oc logs -f $RELEASE_PIPELINERUN -n tssc-app-ci
 
 # 3. Check ReleasePlanAdmission exists in target namespace
-oc get releaseplanadmission -n ${APP_NAME}-dev
-oc get releaseplanadmission -n ${APP_NAME}-stage
-oc get releaseplanadmission -n ${APP_NAME}-prod
+oc get releaseplanadmission -n tssc-app-development
+oc get releaseplanadmission -n tssc-app-stage
+oc get releaseplanadmission -n tssc-app-prod
 
 # 4. Verify RBAC permissions
-oc get rolebindings -n ${APP_NAME}-dev | grep release-deployer
-oc get rolebindings -n ${APP_NAME}-stage | grep release-deployer
-oc get rolebindings -n ${APP_NAME}-prod | grep release-deployer
+oc get rolebindings -n tssc-app-development | grep release-deployer
+oc get rolebindings -n tssc-app-stage | grep release-deployer
+oc get rolebindings -n tssc-app-prod | grep release-deployer
 
 # 5. Check service account
 oc get serviceaccount release-service-account -n tssc-app-ci
@@ -1143,15 +1177,15 @@ oc get secret signing-secrets -n openshift-pipelines
 oc get serviceaccount release-service-account -n tssc-app-ci
 
 # 2. Check RoleBindings in target namespaces
-oc get rolebinding release-deployer -n ${APP_NAME}-dev -o yaml
-oc get rolebinding release-deployer -n ${APP_NAME}-stage -o yaml
-oc get rolebinding release-deployer -n ${APP_NAME}-prod -o yaml
+oc get rolebinding release-deployer -n tssc-app-development -o yaml
+oc get rolebinding release-deployer -n tssc-app-stage -o yaml
+oc get rolebinding release-deployer -n tssc-app-prod -o yaml
 
 # 3. Recreate RoleBinding if needed
 oc create rolebinding release-deployer \
   --serviceaccount=tssc-app-ci:release-service-account \
   --clusterrole=edit \
-  -n ${APP_NAME}-dev --dry-run=client -o yaml | oc apply -f -
+  -n tssc-app-development --dry-run=client -o yaml | oc apply -f -
 ```
 
 ---
@@ -1171,9 +1205,9 @@ oc get snapshots -n tssc-app-ci -w
 oc get releases -n tssc-app-ci -w
 
 # Check deployments
-oc get pods -n ${APP_NAME}-dev
-oc get pods -n ${APP_NAME}-stage
-oc get pods -n ${APP_NAME}-prod
+oc get pods -n tssc-app-development
+oc get pods -n tssc-app-stage
+oc get pods -n tssc-app-prod
 
 # View logs
 oc logs -f pipelinerun/<name> -n tssc-app-ci
@@ -1183,26 +1217,29 @@ oc get applications -n tssc-app-ci
 oc get components -n tssc-app-ci
 oc get integrationtestscenarios -n tssc-app-ci
 oc get releaseplans -n tssc-app-ci
-oc get releaseplanadmissions -n ${APP_NAME}-dev
-oc get releaseplanadmissions -n ${APP_NAME}-stage
-oc get releaseplanadmissions -n ${APP_NAME}-prod
+oc get releaseplanadmissions -n tssc-app-development
+oc get releaseplanadmissions -n tssc-app-stage
+oc get releaseplanadmissions -n tssc-app-prod
 ```
 
 ### Resource Locations
 
-| Resource | Namespace | Count |
-|----------|-----------|-------|
-| Application | tssc-app-ci | 1 |
-| Component | tssc-app-ci | 1+ |
-| Build Pipeline | tssc-app-ci | 1 |
-| Release Pipeline | tssc-app-ci | 1 |
-| Integration Pipeline | tssc-app-ci | 1 |
-| Snapshot | tssc-app-ci | Many |
-| ReleasePlan | tssc-app-ci | 3 |
-| Release | tssc-app-ci | Many |
-| ReleasePlanAdmission | my-app-dev | 1 |
-| ReleasePlanAdmission | my-app-stage | 1 |
-| ReleasePlanAdmission | my-app-prod | 1 |
+| Resource | Namespace | Count | Notes |
+|----------|-----------|-------|-------|
+| Application | tssc-app-ci | 1 per app | Each app from Developer Hub |
+| Component | tssc-app-ci | 1+ per app | Components for each app |
+| Build Pipeline | tssc-app-ci | 1 (shared) | maven-build-ci-konflux |
+| Release Pipeline | tssc-app-ci | 1 (shared) | release-pipeline |
+| Integration Pipeline | tssc-app-ci | 1 (shared) | integration-tests |
+| Snapshot | tssc-app-ci | Many | Per app build |
+| ReleasePlan | tssc-app-ci | 3 per app | dev/stage/prod per app |
+| Release | tssc-app-ci | Many | Per app release |
+| ReleasePlanAdmission | tssc-app-development | 1 (shared) | Accepts ALL apps |
+| ReleasePlanAdmission | tssc-app-stage | 1 (shared) | Accepts ALL apps |
+| ReleasePlanAdmission | tssc-app-prod | 1 (shared) | Accepts ALL apps |
+| Deployment | tssc-app-development | 1+ | One per app |
+| Deployment | tssc-app-stage | 1+ | One per app |
+| Deployment | tssc-app-prod | 1+ | One per app |
 
 ### Image Tags
 
@@ -1221,11 +1258,11 @@ quay.io/myorg/myapp:prod   → sha256:def456...
 
 ### Enterprise Contract Policies
 
-| Environment | Policy | Strict | Behavior |
-|-------------|--------|--------|----------|
-| Dev | slsa3 | false | Warnings only, allows promotion |
-| Stage | slsa3 | true | Blocks on violations |
-| Prod | slsa3-strict | true | Strictest enforcement |
+| Environment | Namespace | Policy | Strict | Behavior |
+|-------------|-----------|--------|--------|----------|
+| Development | tssc-app-development | slsa3 | false | Warnings only, allows promotion |
+| Stage | tssc-app-stage | slsa3 | true | Blocks on violations |
+| Production | tssc-app-prod | slsa3-strict | true | Strictest enforcement |
 
 ---
 
