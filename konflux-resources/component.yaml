@@ -1,0 +1,44 @@
+# Konflux Component Resource
+# This defines a buildable component of your application
+# Apply this to the tssc-app-ci namespace
+
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Component
+metadata:
+  name: my-java-app-backend  # CHANGE THIS: Component name
+  namespace: tssc-app-ci  # All Konflux resources go in CI namespace
+  annotations:
+    description: "Backend service for my-java-app"
+spec:
+  application: my-java-app  # MUST MATCH: Application name from application.yaml
+  componentName: my-java-app-backend  # CHANGE THIS: Same as metadata.name
+
+  # Source code location
+  source:
+    git:
+      url: https://gitlab.example.com/myorg/my-java-app  # CHANGE THIS: Your git repo
+      revision: main  # or master
+      context: ./  # Path within repo (usually ./)
+
+  # Build configuration
+  build:
+    containerImage: quay.io/myorg/my-java-app-backend  # CHANGE THIS: Your image repo (without tag)
+
+  # Link to Konflux build pipeline
+  buildPipelineRef:
+    name: maven-build-ci-konflux  # This is the pipeline we just created
+
+---
+# How to apply:
+# 1. Edit the values marked with "CHANGE THIS" above
+# 2. Make sure application name matches application.yaml
+# 3. Apply to cluster:
+#    oc apply -f component.yaml -n tssc-app-ci
+#
+# 4. Verify:
+#    oc get component my-java-app-backend -n tssc-app-ci
+#
+# Important notes:
+# - The containerImage should NOT include a tag
+# - Tags will be auto-generated from git commit SHAs
+# - Example: quay.io/myorg/my-java-app-backend:a1b2c3d4

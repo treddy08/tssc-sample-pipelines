@@ -1,0 +1,45 @@
+# Konflux IntegrationTestScenario Resource
+# This tells Konflux to run integration tests on new Snapshots
+# Apply this to the tssc-app-ci namespace
+
+apiVersion: appstudio.redhat.com/v1beta1
+kind: IntegrationTestScenario
+metadata:
+  name: integration-tests  # Name of this test scenario
+  namespace: tssc-app-ci  # All Konflux resources go in CI namespace
+  annotations:
+    description: "Integration tests that run after build completes"
+spec:
+  application: my-java-app  # MUST MATCH: Application name from application.yaml
+
+  # Reference to the integration test pipeline
+  resolverRef:
+    resolver: cluster
+    params:
+      - name: name
+        value: integration-tests  # Name of the pipeline we created
+      - name: namespace
+        value: tssc-app-ci  # Pipeline runs in CI namespace
+      - name: kind
+        value: Pipeline
+
+  # Test context
+  contexts:
+    - name: integration
+      description: "Run integration tests on newly built images"
+
+---
+# How to apply:
+# 1. Make sure application name matches application.yaml
+# 2. Apply to cluster:
+#    oc apply -f integration-test-scenario.yaml -n tssc-app-ci
+#
+# 3. Verify:
+#    oc get integrationtestscenario integration-tests -n tssc-app-ci
+#
+# What this does:
+# - When a build completes, Konflux creates a Snapshot
+# - Konflux sees this IntegrationTestScenario for the app
+# - Konflux runs the integration-tests pipeline
+# - If tests pass, Snapshot is marked as validated
+# - Only validated Snapshots can be released

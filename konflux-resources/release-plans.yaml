@@ -1,0 +1,97 @@
+# Konflux ReleasePlan Resources
+# These define how Snapshots are promoted to environments
+# ALL THREE go in the tssc-app-ci namespace
+
+---
+# ReleasePlan for Dev Environment
+# Auto-releases after integration tests pass
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: ReleasePlan
+metadata:
+  name: release-to-dev
+  namespace: tssc-app-ci  # All ReleasePlans go in CI namespace
+  labels:
+    release.appstudio.openshift.io/auto-release: "true"  # Automatic promotion
+  annotations:
+    description: "Automatically release to dev after tests pass"
+spec:
+  application: my-java-app  # MUST MATCH: Application name
+
+  # Target namespace (runtime namespace, not CI namespace)
+  target: my-java-app-dev  # CHANGE THIS: Your app name + "-dev"
+
+  # Pipeline runs in tssc-app-ci namespace
+  pipelineRef:
+    name: release-pipeline
+    namespace: tssc-app-ci  # Same namespace as this ReleasePlan
+
+  # Service account for running release pipeline
+  serviceAccount: release-service-account
+
+---
+# ReleasePlan for Stage Environment
+# Auto-releases after dev deployment succeeds
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: ReleasePlan
+metadata:
+  name: release-to-stage
+  namespace: tssc-app-ci  # All ReleasePlans go in CI namespace
+  labels:
+    release.appstudio.openshift.io/auto-release: "true"  # Automatic promotion
+  annotations:
+    description: "Automatically release to stage after dev"
+spec:
+  application: my-java-app  # MUST MATCH: Application name
+
+  # Target namespace
+  target: my-java-app-stage  # CHANGE THIS: Your app name + "-stage"
+
+  # Pipeline runs in tssc-app-ci namespace
+  pipelineRef:
+    name: release-pipeline
+    namespace: tssc-app-ci
+
+  # Service account for running release pipeline
+  serviceAccount: release-service-account
+
+---
+# ReleasePlan for Prod Environment
+# Manual release only (requires creating Release CR)
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: ReleasePlan
+metadata:
+  name: release-to-prod
+  namespace: tssc-app-ci  # All ReleasePlans go in CI namespace
+  labels:
+    release.appstudio.openshift.io/auto-release: "false"  # Manual only!
+  annotations:
+    description: "Manual release to production (requires approval)"
+spec:
+  application: my-java-app  # MUST MATCH: Application name
+
+  # Target namespace
+  target: my-java-app-prod  # CHANGE THIS: Your app name + "-prod"
+
+  # Pipeline runs in tssc-app-ci namespace
+  pipelineRef:
+    name: release-pipeline
+    namespace: tssc-app-ci
+
+  # Service account for running release pipeline
+  serviceAccount: release-service-account
+
+---
+# How to apply:
+# 1. Edit the 'target' fields to match your app name
+# 2. Make sure application name matches application.yaml
+# 3. Apply to cluster:
+#    oc apply -f release-plans.yaml -n tssc-app-ci
+#
+# 4. Verify all three were created:
+#    oc get releaseplans -n tssc-app-ci
+#
+# Expected output:
+# NAME                AUTO-RELEASE   APPLICATION
+# release-to-dev      true           my-java-app
+# release-to-stage    true           my-java-app
+# release-to-prod     false          my-java-app

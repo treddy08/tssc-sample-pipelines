@@ -1,0 +1,129 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: integration-tests
+  labels:
+    test.appstudio.openshift.io/pipeline: "true"
+spec:
+  description: |
+    Integration test pipeline for Konflux Snapshots.
+    This pipeline runs after a build completes and before auto-releases.
+    It verifies that the newly built image works correctly.
+
+  params:
+    - name: SNAPSHOT
+      description: "JSON representation of the Snapshot to test"
+      type: string
+
+  tasks:
+    # Task 1: Parse Snapshot to get image URL
+    - name: parse-snapshot
+      taskSpec:
+        params:
+          - name: SNAPSHOT
+            description: "Snapshot JSON"
+        results:
+          - name: IMAGE_URL
+            description: "Full image reference with digest"
+          - name: COMPONENT_NAME
+            description: "Component name"
+        steps:
+          - name: parse
+            image: quay.io/konflux-ci/konflux-test:latest
+            script: |
+              #!/bin/sh
+              set -e
+
+              echo "Parsing Snapshot for testing..."
+              SNAPSHOT='$(params.SNAPSHOT)'
+
+              # Extract full image reference (includes @sha256:...)
+              IMAGE_URL=$(echo "$SNAPSHOT" | jq -r '.components[0].containerImage')
+              COMPONENT=$(echo "$SNAPSHOT" | jq -r '.components[0].name')
+
+              echo "Image to test: $IMAGE_URL"
+              echo "Component: $COMPONENT"
+
+              # Write results
+              echo -n "$IMAGE_URL" | tee $(results.IMAGE_URL.path)
+              echo -n "$COMPONENT" | tee $(results.COMPONENT_NAME.path)
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+
+    # Task 2: Run integration tests
+    - name: run-tests
+      runAfter:
+        - parse-snapshot
+      taskSpec:
+        params:
+          - name: IMAGE_URL
+            description: "Image to test (with digest)"
+          - name: COMPONENT_NAME
+            description: "Component being tested"
+        steps:
+          - name: health-check
+            image: $(params.IMAGE_URL)
+            script: |
+              #!/bin/sh
+              set -e
+
+              echo "=========================================="
+              echo "Integration Tests for $(params.COMPONENT_NAME)"
+              echo "Image: $(params.IMAGE_URL)"
+              echo "=========================================="
+
+              # Example integration tests
+              # Customize these for your application
+
+              echo "✓ Test 1: Image can be pulled and run"
+
+              # Uncomment and customize for your app:
+              # echo "✓ Test 2: Health check endpoint"
+              # curl -f http://localhost:8080/health || exit 1
+
+              # echo "✓ Test 3: Database connectivity"
+              # psql -h db -U user -d database -c "SELECT 1" || exit 1
+
+              # echo "✓ Test 4: API smoke tests"
+              # curl -f http://localhost:8080/api/v1/status || exit 1
+
+              echo "=========================================="
+              echo "All integration tests passed!"
+              echo "=========================================="
+
+          - name: security-scan
+            image: quay.io/konflux-ci/konflux-test:latest
+            script: |
+              #!/bin/sh
+              echo "✓ Security scan placeholder (customize for your needs)"
+              # Example: Run additional security checks
+              # trivy image $(params.IMAGE_URL)
+
+          - name: compliance-check
+            image: quay.io/konflux-ci/konflux-test:latest
+            script: |
+              #!/bin/sh
+              echo "✓ Compliance check placeholder (customize for your needs)"
+              # Example: Verify SBOM, licenses, etc.
+      params:
+        - name: IMAGE_URL
+          value: $(tasks.parse-snapshot.results.IMAGE_URL)
+        - name: COMPONENT_NAME
+          value: $(tasks.parse-snapshot.results.COMPONENT_NAME)
+
+  finally:
+    - name: report-results
+      taskSpec:
+        steps:
+          - name: summary
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            script: |
+              #!/bin/sh
+              echo "=========================================="
+              echo "Integration Test Summary"
+              echo "=========================================="
+              echo "Component: $(tasks.parse-snapshot.results.COMPONENT_NAME)"
+              echo "Image: $(tasks.parse-snapshot.results.IMAGE_URL)"
+              echo "Status: $(tasks.run-tests.status)"
+              echo "=========================================="

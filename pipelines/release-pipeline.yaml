@@ -1,0 +1,226 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: release-pipeline
+  labels:
+    release.appstudio.openshift.io/pipeline: "true"
+spec:
+  description: |
+    Konflux release pipeline that promotes images to target environments.
+    This pipeline:
+    1. Extracts image information from the Snapshot
+    2. Verifies Enterprise Contract policies
+    3. Determines target environment
+    4. Copies image to environment-specific tag
+    5. Updates GitOps repository for deployment
+
+  params:
+    - name: release
+      type: string
+      description: "Namespaced name of the Release (e.g., tssc-app-ci/my-release)"
+    - name: releasePlan
+      type: string
+      description: "Namespaced name of the ReleasePlan"
+    - name: releasePlanAdmission
+      type: string
+      description: "Namespaced name of the ReleasePlanAdmission"
+    - name: releaseServiceConfig
+      type: string
+      description: "Namespaced name of the ReleaseServiceConfig"
+      default: ""
+    - name: snapshot
+      type: string
+      description: "JSON string of the Snapshot being released"
+    - name: enterpriseContractPolicy
+      type: string
+      default: ""
+      description: "Enterprise Contract policy to enforce (from ReleasePlanAdmission)"
+    - name: enterpriseContractPublicKey
+      type: string
+      default: "k8s://openshift-pipelines/signing-secrets"
+      description: "Public key for signature verification (from ReleasePlanAdmission)"
+    - name: postCleanUp
+      type: string
+      default: "true"
+      description: "Cleanup temporary resources after release"
+    - name: gitops-repo-url
+      type: string
+      default: ""
+      description: "GitOps repository URL (optional, can be derived from snapshot)"
+
+  tasks:
+    # Task 1: Extract image information from Snapshot JSON
+    - name: extract-snapshot-data
+      taskSpec:
+        params:
+          - name: snapshot
+            description: "JSON representation of the Snapshot"
+        results:
+          - name: IMAGE_URL
+            description: "Image repository without tag/digest"
+          - name: IMAGE_DIGEST
+            description: "SHA256 digest of the image"
+          - name: COMPONENT_NAME
+            description: "Component name from snapshot"
+          - name: GIT_URL
+            description: "Source git URL"
+          - name: GIT_COMMIT
+            description: "Source git commit SHA"
+        steps:
+          - name: parse
+            image: quay.io/konflux-ci/release-utils:latest
+            script: |
+              #!/bin/sh
+              set -e
+
+              echo "Parsing Snapshot JSON..."
+              SNAPSHOT='$(params.snapshot)'
+
+              # Extract full image reference (URL@digest)
+              FULL_IMAGE=$(echo "$SNAPSHOT" | jq -r '.components[0].containerImage')
+              echo "Full image reference: $FULL_IMAGE"
+
+              # Split into URL and digest
+              IMAGE_URL=$(echo "$FULL_IMAGE" | cut -d@ -f1)
+              IMAGE_DIGEST=$(echo "$FULL_IMAGE" | cut -d@ -f2)
+
+              # Extract component name
+              COMPONENT_NAME=$(echo "$SNAPSHOT" | jq -r '.components[0].name')
+
+              # Extract git information
+              GIT_URL=$(echo "$SNAPSHOT" | jq -r '.components[0].source.git.url // ""')
+              GIT_COMMIT=$(echo "$SNAPSHOT" | jq -r '.components[0].source.git.revision // ""')
+
+              # Write results
+              echo -n "$IMAGE_URL" | tee $(results.IMAGE_URL.path)
+              echo -n "$IMAGE_DIGEST" | tee $(results.IMAGE_DIGEST.path)
+              echo -n "$COMPONENT_NAME" | tee $(results.COMPONENT_NAME.path)
+              echo -n "$GIT_URL" | tee $(results.GIT_URL.path)
+              echo -n "$GIT_COMMIT" | tee $(results.GIT_COMMIT.path)
+
+              echo "Extracted data:"
+              echo "  Image URL: $IMAGE_URL"
+              echo "  Image Digest: $IMAGE_DIGEST"
+              echo "  Component: $COMPONENT_NAME"
+              echo "  Git URL: $GIT_URL"
+              echo "  Git Commit: $GIT_COMMIT"
+      params:
+        - name: snapshot
+          value: $(params.snapshot)
+
+    # Task 2: Verify Enterprise Contract policies
+    - name: verify-enterprise-contract
+      runAfter:
+        - extract-snapshot-data
+      taskRef:
+        name: verify-enterprise-contract
+      params:
+        - name: IMAGES
+          value: '{"components":[{"containerImage":"$(tasks.extract-snapshot-data.results.IMAGE_URL)@$(tasks.extract-snapshot-data.results.IMAGE_DIGEST)"}]}'
+        - name: POLICY_CONFIGURATION
+          value: $(params.enterpriseContractPolicy)
+        - name: PUBLIC_KEY
+          value: $(params.enterpriseContractPublicKey)
+        - name: STRICT
+          value: "true"
+      when:
+        - input: "$(params.enterpriseContractPolicy)"
+          operator: notin
+          values: ["", "skip"]
+
+    # Task 3: Get target environment from ReleasePlanAdmission
+    - name: get-target-environment
+      runAfter:
+        - verify-enterprise-contract
+      taskSpec:
+        params:
+          - name: releasePlanAdmission
+            description: "Namespaced name of ReleasePlanAdmission (namespace/name)"
+        results:
+          - name: ENVIRONMENT
+            description: "Target environment name (dev, stage, prod)"
+          - name: TARGET_NAMESPACE
+            description: "Target namespace for deployment"
+        steps:
+          - name: get-env
+            image: quay.io/openshift/origin-cli:latest
+            script: |
+              #!/bin/sh
+              set -e
+
+              echo "Getting target environment from ReleasePlanAdmission..."
+
+              # Extract namespace and name from "namespace/name" format
+              NAMESPACE=$(echo "$(params.releasePlanAdmission)" | cut -d/ -f1)
+              NAME=$(echo "$(params.releasePlanAdmission)" | cut -d/ -f2)
+
+              echo "Looking up ReleasePlanAdmission: $NAME in namespace: $NAMESPACE"
+
+              # Get environment from ReleasePlanAdmission
+              ENV=$(oc get releaseplanadmission -n "$NAMESPACE" "$NAME" \
+                -o jsonpath='{.spec.environment}' 2>/dev/null || echo "unknown")
+
+              # Write results
+              echo -n "$NAMESPACE" | tee $(results.TARGET_NAMESPACE.path)
+              echo -n "$ENV" | tee $(results.ENVIRONMENT.path)
+
+              echo "Target namespace: $NAMESPACE"
+              echo "Environment: $ENV"
+      params:
+        - name: releasePlanAdmission
+          value: $(params.releasePlanAdmission)
+
+    # Task 4: Copy image to environment-specific tag
+    - name: copy-image
+      runAfter:
+        - get-target-environment
+      taskRef:
+        name: skopeo-copy
+      params:
+        - name: SOURCE_IMAGE_URL
+          value: "docker://$(tasks.extract-snapshot-data.results.IMAGE_URL)@$(tasks.extract-snapshot-data.results.IMAGE_DIGEST)"
+        - name: DESTINATION_IMAGE_URL
+          value: "docker://$(tasks.extract-snapshot-data.results.IMAGE_URL):$(tasks.get-target-environment.results.ENVIRONMENT)"
+        - name: SRC_TLS_VERIFY
+          value: "true"
+        - name: DEST_TLS_VERIFY
+          value: "true"
+
+    # Task 5: Update GitOps repository for deployment
+    - name: update-gitops
+      runAfter:
+        - copy-image
+      taskRef:
+        name: update-deployment
+      params:
+        - name: gitops-repo-url
+          # Try param first, fallback to git-url-gitops convention
+          value: |
+            $(params.gitops-repo-url)$(tasks.extract-snapshot-data.results.GIT_URL)-gitops
+        - name: image
+          value: "$(tasks.extract-snapshot-data.results.IMAGE_URL):$(tasks.get-target-environment.results.ENVIRONMENT)"
+        - name: environment
+          value: "$(tasks.get-target-environment.results.ENVIRONMENT)"
+      when:
+        - input: "$(tasks.extract-snapshot-data.results.GIT_URL)"
+          operator: notin
+          values: ["", "null"]
+
+  finally:
+    - name: cleanup
+      taskSpec:
+        steps:
+          - name: log-completion
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            script: |
+              #!/bin/sh
+              echo "================================================================"
+              echo "Release Pipeline Completed"
+              echo "================================================================"
+              echo "Target Namespace: $(tasks.get-target-environment.results.TARGET_NAMESPACE)"
+              echo "Environment: $(tasks.get-target-environment.results.ENVIRONMENT)"
+              echo "Component: $(tasks.extract-snapshot-data.results.COMPONENT_NAME)"
+              echo "Image: $(tasks.extract-snapshot-data.results.IMAGE_URL):$(tasks.get-target-environment.results.ENVIRONMENT)"
+              echo "Digest: $(tasks.extract-snapshot-data.results.IMAGE_DIGEST)"
+              echo "Source: $(tasks.extract-snapshot-data.results.GIT_URL)@$(tasks.extract-snapshot-data.results.GIT_COMMIT)"
+              echo "================================================================"

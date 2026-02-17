@@ -1,0 +1,23 @@
+# Konflux Application Resource
+# This defines your application in Konflux
+# Apply this to the tssc-app-ci namespace
+
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: Application
+metadata:
+  name: my-java-app  # CHANGE THIS: Your application name
+  namespace: tssc-app-ci  # All Konflux resources go in CI namespace
+  annotations:
+    description: "Sample Java application with Konflux CI/CD"
+spec:
+  displayName: "My Java Application"  # CHANGE THIS: Display name
+  description: "Java application built with Maven and deployed via Konflux"
+
+---
+# How to apply:
+# 1. Edit the name and displayName above
+# 2. Apply to cluster:
+#    oc apply -f application.yaml -n tssc-app-ci
+#
+# 3. Verify:
+#    oc get application my-java-app -n tssc-app-ci

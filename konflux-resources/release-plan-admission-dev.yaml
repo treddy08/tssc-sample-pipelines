@@ -1,0 +1,52 @@
+# Konflux ReleasePlanAdmission for DEV Environment
+# This goes in the my-java-app-dev namespace (NOT tssc-app-ci)
+# It accepts releases FROM tssc-app-ci
+
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: ReleasePlanAdmission
+metadata:
+  name: accept-releases
+  namespace: my-java-app-dev  # CHANGE THIS: Your runtime namespace for dev
+  annotations:
+    description: "Accept releases from tssc-app-ci to dev environment"
+spec:
+  # Accept releases from CI namespace
+  origin: tssc-app-ci
+
+  # Which applications can release here
+  applications:
+    - my-java-app  # MUST MATCH: Application name
+
+  # Environment identifier
+  environment: dev
+
+  # Pipeline runs in tssc-app-ci (cross-namespace reference)
+  pipelineRef:
+    name: release-pipeline
+    namespace: tssc-app-ci  # Pipeline is in CI namespace
+
+  # Service account (must have cross-namespace permissions)
+  serviceAccount: release-service-account
+
+  # Enterprise Contract policy configuration
+  data:
+    enterpriseContract:
+      # Policy for dev (relaxed - allows warnings)
+      policy: "github.com/enterprise-contract/config//slsa3"
+      publicKey: "k8s://openshift-pipelines/signing-secrets"
+      strict: "false"  # Warn but don't block in dev
+
+---
+# How to apply:
+# 1. Edit the namespace to match your dev runtime namespace
+# 2. Make sure application name matches
+# 3. Apply to the DEV namespace:
+#    oc apply -f release-plan-admission-dev.yaml -n my-java-app-dev
+#
+# 4. Verify:
+#    oc get releaseplanadmission accept-releases -n my-java-app-dev
+#
+# Important:
+# - This MUST be in the runtime namespace (my-java-app-dev)
+# - NOT in tssc-app-ci
+# - It references the pipeline in tssc-app-ci (cross-namespace)

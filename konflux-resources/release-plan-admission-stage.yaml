@@ -1,0 +1,52 @@
+# Konflux ReleasePlanAdmission for STAGE Environment
+# This goes in the my-java-app-stage namespace (NOT tssc-app-ci)
+# It accepts releases FROM tssc-app-ci
+
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: ReleasePlanAdmission
+metadata:
+  name: accept-releases
+  namespace: my-java-app-stage  # CHANGE THIS: Your runtime namespace for stage
+  annotations:
+    description: "Accept releases from tssc-app-ci to stage environment"
+spec:
+  # Accept releases from CI namespace
+  origin: tssc-app-ci
+
+  # Which applications can release here
+  applications:
+    - my-java-app  # MUST MATCH: Application name
+
+  # Environment identifier
+  environment: stage
+
+  # Pipeline runs in tssc-app-ci (cross-namespace reference)
+  pipelineRef:
+    name: release-pipeline
+    namespace: tssc-app-ci  # Pipeline is in CI namespace
+
+  # Service account (must have cross-namespace permissions)
+  serviceAccount: release-service-account
+
+  # Enterprise Contract policy configuration
+  data:
+    enterpriseContract:
+      # Policy for stage (standard - enforces rules)
+      policy: "github.com/enterprise-contract/config//slsa3"
+      publicKey: "k8s://openshift-pipelines/signing-secrets"
+      strict: "true"  # Block if policy fails in stage
+
+---
+# How to apply:
+# 1. Edit the namespace to match your stage runtime namespace
+# 2. Make sure application name matches
+# 3. Apply to the STAGE namespace:
+#    oc apply -f release-plan-admission-stage.yaml -n my-java-app-stage
+#
+# 4. Verify:
+#    oc get releaseplanadmission accept-releases -n my-java-app-stage
+#
+# Important:
+# - This MUST be in the runtime namespace (my-java-app-stage)
+# - NOT in tssc-app-ci
+# - Notice strict: "true" - stage blocks bad images

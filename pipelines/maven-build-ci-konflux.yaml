@@ -1,0 +1,284 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: maven-build-ci-konflux
+  labels:
+    # KONFLUX DISCOVERY LABELS - Required for Konflux to recognize this pipeline
+    appstudio.openshift.io/pipeline: build
+    pipelines.openshift.io/runtime: generic
+    pipelines.openshift.io/strategy: docker
+    pipelines.openshift.io/used-by: build-cloud
+spec:
+  # CRITICAL: These results are required for Konflux to create Snapshots
+  results:
+    - name: IMAGE_URL
+      description: The built image URL (without tag or digest)
+      value: $(tasks.build-container.results.IMAGE_URL)
+    - name: IMAGE_DIGEST
+      description: The built image SHA256 digest
+      value: $(tasks.build-container.results.IMAGE_DIGEST)
+    - name: CHAINS-GIT_URL
+      description: The source git repository URL
+      value: $(tasks.clone-repository.results.url)
+    - name: CHAINS-GIT_COMMIT
+      description: The source git commit SHA
+      value: $(tasks.clone-repository.results.commit)
+    - name: ACS_SCAN_OUTPUT
+      description: ACS vulnerability scan results
+      value: $(tasks.acs-image-scan.results.SCAN_OUTPUT)
+
+  params:
+    - name: component-name
+      description: Name of the software component
+      type: string
+    - name: git-url
+      description: Source Repository URL
+      type: string
+    - name: revision
+      description: Revision of the Source Repository
+      type: string
+      default: ""
+    - name: output-image
+      description: Fully Qualified Output Image (will be tagged with commit SHA)
+      type: string
+    - name: path-context
+      description: Path to the source code of an application's component
+      type: string
+      default: .
+    - name: dockerfile
+      description: Path to the Dockerfile
+      type: string
+      default: Dockerfile
+    - name: rebuild
+      description: Force rebuild image
+      type: string
+      default: "false"
+    - name: image-expires-after
+      description: Image tag expiration time (e.g. 1h, 2d, 3w)
+      default: ""
+    - name: stackrox-secret
+      description: Secret name for ACS/Stackrox
+      type: string
+      default: rox-api-token
+    - name: event-type
+      description: Event that triggered the pipeline (push, pull_request)
+      type: string
+      default: push
+    - name: build-args
+      description: Array of --build-arg values for buildah
+      type: array
+      default: []
+    - name: build-args-file
+      description: Path to a file with build arguments for buildah
+      type: string
+      default: ""
+    - name: trustification-secret-name
+      description: Secret name for Trustification SBOM storage
+      type: string
+      default: tpa-secret
+    - name: fail-if-trustification-not-configured
+      description: Fail pipeline if Trustification is not configured
+      type: string
+      default: 'false'
+    - name: sboms-dir
+      description: Directory to store SBOMs
+      type: string
+      default: sboms
+    - name: certificate-identity
+      type: string
+      default: userX@demo.redhat.com
+    - name: oidc-issuer
+      type: string
+      default: https://sso.<domain>/realms/trusted-artifact-signer
+    - name: rekor-url
+      type: string
+      default: http://rekor-server.tssc-tas.svc
+    - name: tuf-mirror
+      type: string
+      default: http://tuf.tssc-tas.svc
+    - name: verify-commit
+      type: string
+      default: 'false'
+
+  tasks:
+    - name: init
+      params:
+        - name: image-url
+          value: $(params.output-image)
+        - name: rebuild
+          value: $(params.rebuild)
+      taskRef:
+        name: init
+
+    - name: clone-repository
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.revision)
+      runAfter:
+        - init
+      taskRef:
+        name: git-clone
+      when:
+        - input: $(tasks.init.results.build)
+          operator: in
+          values:
+            - "true"
+      workspaces:
+        - name: output
+          workspace: workspace
+        - name: basic-auth
+          workspace: git-auth
+
+    - name: verify-commit
+      params:
+        - name: certificate-identity
+          value: $(params.certificate-identity)
+        - name: oidc-issuer
+          value: $(params.oidc-issuer)
+        - name: rekor-url
+          value: $(params.rekor-url)
+        - name: tuf-mirror
+          value: $(params.tuf-mirror)
+      runAfter:
+        - clone-repository
+      taskRef:
+        name: verify-commit
+      workspaces:
+        - name: repository
+          workspace: workspace
+      when:
+        - input: "$(params.verify-commit)"
+          operator: in
+          values: ["true"]
+
+    - name: package
+      params:
+        - name: SUBDIRECTORY
+          value: source
+      runAfter:
+        - verify-commit
+      taskRef:
+        name: maven
+      workspaces:
+        - name: source
+          workspace: workspace
+        - name: maven-settings
+          workspace: maven-settings
+
+    - name: build-container
+      params:
+        - name: IMAGE
+          value: $(params.output-image)
+        - name: DOCKERFILE
+          value: $(params.dockerfile)
+        - name: CONTEXT
+          value: $(params.path-context)
+        - name: IMAGE_EXPIRES_AFTER
+          value: $(params.image-expires-after)
+        - name: COMMIT_SHA
+          value: $(tasks.clone-repository.results.commit)
+        - name: BUILD_ARGS
+          value:
+            - $(params.build-args[*])
+        - name: BUILD_ARGS_FILE
+          value: $(params.build-args-file)
+        - name: SBOMS_DIR
+          value: $(params.sboms-dir)
+      runAfter:
+        - package
+      taskRef:
+        name: buildah-rhtap
+      when:
+        - input: $(tasks.init.results.build)
+          operator: in
+          values:
+            - "true"
+      workspaces:
+        - name: source
+          workspace: workspace
+
+    - name: upload-sboms-to-trustification
+      params:
+        - name: COMPONENT_NAME
+          value: $(params.component-name)
+        - name: SBOMS_DIR
+          value: $(params.sboms-dir)
+        - name: TRUSTIFICATION_SECRET_NAME
+          value: $(params.trustification-secret-name)
+        - name: FAIL_IF_TRUSTIFICATION_NOT_CONFIGURED
+          value: $(params.fail-if-trustification-not-configured)
+      runAfter:
+        - build-container
+      taskRef:
+        name: upload-sbom-to-trustification
+      workspaces:
+        - name: sboms
+          workspace: workspace
+
+    - name: acs-image-check
+      retries: 3
+      params:
+        - name: rox-secret-name
+          value: $(params.stackrox-secret)
+        - name: image
+          value: $(params.output-image)
+        - name: insecure-skip-tls-verify
+          value: "true"
+        - name: image-digest
+          value: $(tasks.build-container.results.IMAGE_DIGEST)
+      runAfter:
+        - upload-sboms-to-trustification
+      taskRef:
+        name: acs-image-check
+
+    - name: acs-image-scan
+      retries: 3
+      params:
+        - name: rox-secret-name
+          value: $(params.stackrox-secret)
+        - name: image
+          value: $(params.output-image)
+        - name: insecure-skip-tls-verify
+          value: "true"
+        - name: image-digest
+          value: $(tasks.build-container.results.IMAGE_DIGEST)
+      runAfter:
+        - upload-sboms-to-trustification
+      taskRef:
+        name: acs-image-scan
+
+    # REMOVED: update-deployment task
+    # REMOVED: acs-deploy-check task
+    # REASON: Konflux handles deployment via Release pipeline, not build pipeline
+
+  finally:
+    - name: show-sbom
+      params:
+        - name: IMAGE_URL
+          value: $(tasks.build-container.results.IMAGE_URL)
+      taskRef:
+        name: show-sbom-rhdh
+
+    - name: show-summary
+      params:
+        - name: pipelinerun-name
+          value: $(context.pipelineRun.name)
+        - name: git-url
+          value: $(tasks.clone-repository.results.url)?rev=$(tasks.clone-repository.results.commit)
+        - name: image-url
+          value: $(params.output-image)
+        - name: build-task-status
+          value: $(tasks.build-container.status)
+      taskRef:
+        name: summary
+      workspaces:
+        - name: workspace
+          workspace: workspace
+
+  workspaces:
+    - name: workspace
+    - name: maven-settings
+    - name: git-auth
+      optional: true
