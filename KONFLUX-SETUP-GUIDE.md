@@ -305,7 +305,66 @@ oc get pods -n openshift-pipelines
 
 ---
 
-### Step 2: Create Shared Environment Namespaces
+### Step 2: Create Konflux Instance
+
+After the operator is installed, create a Konflux instance to deploy the Konflux controllers.
+
+```bash
+# Check available Konflux instance CRDs
+oc get crd | grep -E "konflux|appstudio" | grep -v "application\|component\|snapshot\|release"
+
+# The operator should provide a Konflux or AppStudio instance CRD
+# Common names: Konflux, AppStudioInstance, RHTAP
+
+# Example: Create Konflux instance (adjust based on your operator version)
+cat <<EOF | oc apply -f -
+apiVersion: appstudio.redhat.com/v1alpha1
+kind: AppStudio
+metadata:
+  name: appstudio-instance
+  namespace: appstudio-system
+spec:
+  # Minimal instance configuration
+  # Adjust based on your operator documentation
+EOF
+
+# Wait for Konflux instance to be ready
+echo "Waiting for Konflux instance to deploy..."
+sleep 120
+
+# Verify Konflux controllers are running
+oc get pods -n appstudio-system
+
+# You should see controllers like:
+# appstudio-controller-manager-*
+# integration-service-*
+# release-service-*
+# enterprise-contract-*
+```
+
+**Note:** The exact Konflux instance CR specification depends on the community operator version. Check the operator documentation or available CRDs:
+
+```bash
+# Get the instance CRD name
+INSTANCE_CRD=$(oc get crd | grep appstudio | grep -v "application\|component\|snapshot\|release\|integration\|environment" | head -1 | awk '{print $1}')
+
+# View the CRD spec for examples
+oc explain $INSTANCE_CRD.spec
+
+# Or check operator documentation
+oc describe csv -n openshift-operators | grep konflux
+```
+
+**If no instance CR is required:** Some operator versions may auto-create controllers. Verify by checking for running pods:
+
+```bash
+# Check for Konflux controller pods
+oc get pods -A | grep -E "appstudio|konflux|integration|release"
+```
+
+---
+
+### Step 3: Create Shared Environment Namespaces
 
 Create the shared environment namespaces. This is a **one-time setup** - all applications from Developer Hub will deploy to these same namespaces.
 
@@ -362,7 +421,7 @@ tssc-app-prod          Active   1m
 
 ---
 
-### Step 3: Setup RBAC (Cross-Namespace Permissions)
+### Step 4: Setup RBAC (Cross-Namespace Permissions)
 
 The release pipeline runs in `tssc-app-ci` but needs to deploy to the shared environment namespaces. This is a **one-time setup** for all applications.
 
@@ -415,7 +474,7 @@ oc get serviceaccount release-service-account -n tssc-app-ci
 
 ---
 
-### Step 4: Install Pipelines and Tasks
+### Step 5: Install Pipelines and Tasks
 
 Install all pipelines and tasks in the `tssc-app-ci` namespace:
 
@@ -451,7 +510,7 @@ oc get pipelines -n tssc-app-ci
 
 ---
 
-### Step 5: Configure and Apply Konflux Resources
+### Step 6: Configure and Apply Konflux Resources
 
 Now we'll create all the Konflux CRs. These tell Konflux about your application.
 
@@ -736,7 +795,7 @@ oc get releaseplanadmission -n tssc-app-prod
 
 ---
 
-### Step 6: Update Your Application Repository
+### Step 7: Update Your Application Repository
 
 In your **application repository** (not tssc-sample-pipelines), update the Pipelines as Code trigger.
 
