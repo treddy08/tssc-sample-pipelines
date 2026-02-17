@@ -226,7 +226,7 @@ metadata:
   name: konflux-operator
   namespace: openshift-operators
 spec:
-  channel: stable-v0.0
+  channel: stable-v0
   name: konflux-operator
   source: community-operators
   sourceNamespace: openshift-marketplace
