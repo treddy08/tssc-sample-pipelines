@@ -166,7 +166,8 @@ Before you begin, ensure you have:
 
 - ✅ **OpenShift 4.12+** cluster with admin access
 - ✅ **oc CLI** installed and logged in as admin
-- ✅ **Konflux operator** installed (see Step 1 below)
+- ✅ **Konflux Operator** will be installed in Step 1 (from community catalog)
+- ✅ **OpenShift Pipelines (Tekton)** will be installed in Step 1 if not present
 - ✅ **Application name** chosen (e.g., `my-java-app`)
 - ✅ **Git repository** URL for your application
 - ✅ **Container registry** (e.g., quay.io account with credentials)
@@ -214,15 +215,35 @@ tssc-sample-pipelines/
 
 ### Step 1: Install Konflux Operator
 
-**If Konflux is already installed on your cluster, skip to Step 2.**
-
-Check if Konflux is installed:
+Install the Konflux operator from the community catalog using the stable channel.
 
 ```bash
-# Check for Konflux CRDs
+# Install Konflux Operator from community catalog
+cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: konflux-operator
+  namespace: openshift-operators
+spec:
+  channel: stable-v0.0
+  name: konflux-operator
+  source: community-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+EOF
+
+# Wait for operator to install (this may take a few minutes)
+echo "Waiting for Konflux operator to install..."
+sleep 60
+
+# Verify Konflux operator is running
+oc get pods -n openshift-operators | grep konflux
+
+# Check that Konflux CRDs are installed
 oc get crd | grep appstudio
 
-# If you see these CRDs, Konflux is installed - skip to Step 2:
+# You should see:
 # applications.appstudio.redhat.com
 # components.appstudio.redhat.com
 # snapshots.appstudio.redhat.com
@@ -232,55 +253,41 @@ oc get crd | grep appstudio
 # releases.appstudio.redhat.com
 ```
 
-If not installed, install Konflux:
+**Verify OpenShift Pipelines is installed:**
 
 ```bash
-# Create Konflux system namespace
-oc create namespace konflux-system
+# Check OpenShift Pipelines (Tekton) is running
+oc get pods -n openshift-pipelines
 
-# Install Konflux operator
+# You should see:
+# tekton-pipelines-controller-*
+# tekton-pipelines-webhook-*
+# tekton-chains-controller-* (for image signing)
+```
+
+If OpenShift Pipelines is not installed:
+
+```bash
+# Install OpenShift Pipelines Operator
 cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: CatalogSource
-metadata:
-  name: konflux-catalog
-  namespace: openshift-marketplace
-spec:
-  sourceType: grpc
-  image: quay.io/konflux-ci/konflux-catalog:latest
-  displayName: Konflux Catalog
-  publisher: Red Hat
-  updateStrategy:
-    registryPoll:
-      interval: 10m
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: konflux-operator-group
-  namespace: konflux-system
----
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
-  name: konflux-operator
-  namespace: konflux-system
+  name: openshift-pipelines-operator
+  namespace: openshift-operators
 spec:
-  channel: alpha
-  name: konflux-operator
-  source: konflux-catalog
+  channel: latest
+  name: openshift-pipelines-operator-rh
+  source: redhat-operators
   sourceNamespace: openshift-marketplace
   installPlanApproval: Automatic
 EOF
 
-# Wait for operator to be ready (takes 2-3 minutes)
-oc wait --for=condition=Ready pod \
-  -l app=konflux-operator \
-  -n konflux-system \
-  --timeout=300s
+# Wait for operator to install
+sleep 60
 
-# Verify installation
-oc get crd | grep appstudio
+# Verify
+oc get pods -n openshift-pipelines
 ```
 
 ---
