@@ -310,56 +310,57 @@ oc get pods -n openshift-pipelines
 After the operator is installed, create a Konflux instance to deploy the Konflux controllers.
 
 ```bash
-# Check available Konflux instance CRDs
-oc get crd | grep -E "konflux|appstudio" | grep -v "application\|component\|snapshot\|release"
+# Verify the Konflux CRD is available
+oc get crd konfluxes.konflux.konflux-ci.dev
 
-# The operator should provide a Konflux or AppStudio instance CRD
-# Common names: Konflux, AppStudioInstance, RHTAP
+# View the Konflux CRD specification
+oc explain konflux.spec
 
-# Example: Create Konflux instance (adjust based on your operator version)
+# Create Konflux instance
 cat <<EOF | oc apply -f -
-apiVersion: appstudio.redhat.com/v1alpha1
-kind: AppStudio
+apiVersion: konflux.konflux-ci.dev/v1alpha1
+kind: Konflux
 metadata:
-  name: appstudio-instance
-  namespace: appstudio-system
+  name: konflux-instance
 spec:
-  # Minimal instance configuration
-  # Adjust based on your operator documentation
+  # Default configuration - deploys all Konflux controllers
+  # Controllers: application-service, integration-service, release-service, etc.
 EOF
 
 # Wait for Konflux instance to be ready
 echo "Waiting for Konflux instance to deploy..."
 sleep 120
 
+# Check Konflux instance status
+oc get konflux konflux-instance -o yaml
+
 # Verify Konflux controllers are running
-oc get pods -n appstudio-system
+# Controllers may be deployed in different namespaces
+oc get pods -A | grep -E "application-service|integration-service|release-service|build-service"
 
-# You should see controllers like:
-# appstudio-controller-manager-*
-# integration-service-*
-# release-service-*
-# enterprise-contract-*
+# Common Konflux controller namespaces:
+# - application-service-system
+# - integration-service-system
+# - release-service-system
+# - build-service
+
+# You should see controller pods like:
+# application-service-controller-manager-*
+# integration-service-controller-manager-*
+# release-service-controller-manager-*
 ```
 
-**Note:** The exact Konflux instance CR specification depends on the community operator version. Check the operator documentation or available CRDs:
+**Verify all Konflux controllers are ready:**
 
 ```bash
-# Get the instance CRD name
-INSTANCE_CRD=$(oc get crd | grep appstudio | grep -v "application\|component\|snapshot\|release\|integration\|environment" | head -1 | awk '{print $1}')
+# List all Konflux-related namespaces
+oc get namespaces | grep -E "application-service|integration-service|release-service|build-service"
 
-# View the CRD spec for examples
-oc explain $INSTANCE_CRD.spec
-
-# Or check operator documentation
-oc describe csv -n openshift-operators | grep konflux
-```
-
-**If no instance CR is required:** Some operator versions may auto-create controllers. Verify by checking for running pods:
-
-```bash
-# Check for Konflux controller pods
-oc get pods -A | grep -E "appstudio|konflux|integration|release"
+# Check each controller namespace
+for ns in $(oc get namespaces -o name | grep -E "application-service|integration-service|release-service"); do
+  echo "Checking $ns..."
+  oc get pods -n ${ns#namespace/}
+done
 ```
 
 ---
