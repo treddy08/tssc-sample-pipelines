@@ -344,11 +344,12 @@ oc get pods -n openshift-pipelines
 
 ### Step 2: Create Integration Secrets
 
-Before creating the Konflux instance, set up required integration secrets for GitLab and Quay.
+Before creating the Konflux instance, set up required integration secrets for GitLab and Quay in the `tssc-app-ci` namespace.
 
 ```bash
-# Create namespace for Konflux UI and integration secrets
-oc create namespace konflux-ui
+# Integration secrets are stored in tssc-app-ci namespace
+# Note: tssc-app-ci namespace should be created in Step 4, but we can create it early
+oc create namespace tssc-app-ci --dry-run=client -o yaml | oc apply -f -
 
 # Create GitLab integration secret
 # Replace with your self-hosted GitLab details
@@ -361,7 +362,7 @@ oc create secret generic tssc-gitlab-integration \
   --from-literal=provider.url="${GITLAB_URL}" \
   --from-literal=token="${GITLAB_TOKEN}" \
   --from-literal=webhookSecret="${GITLAB_WEBHOOK_SECRET}" \
-  -n konflux-ui
+  -n tssc-app-ci
 
 # Create Quay integration secret
 # Replace with your Quay.io credentials
@@ -372,10 +373,10 @@ export QUAY_TOKEN="your-quay-robot-token"
 oc create secret generic tssc-quay-integration \
   --from-literal=organization="${QUAY_ORG}" \
   --from-literal=token="${QUAY_TOKEN}" \
-  -n konflux-ui
+  -n tssc-app-ci
 
 # Verify secrets created
-oc get secrets -n konflux-ui | grep tssc
+oc get secrets -n tssc-app-ci | grep tssc
 ```
 
 **Note:** These secrets will be used by the Konflux instance to:
@@ -399,6 +400,9 @@ To create a Personal Access Token in GitLab:
 After the operator is installed and integration secrets are configured, create a Konflux instance to deploy the Konflux controllers.
 
 ```bash
+# Create konflux-ui namespace for the Konflux instance
+oc create namespace konflux-ui --dry-run=client -o yaml | oc apply -f -
+
 # Verify the Konflux CRD is available
 oc get crd konfluxes.konflux.konflux-ci.dev
 
@@ -595,26 +599,26 @@ oc create rolebinding secret-rw-binding \
 
 # Copy GitLab integration secret to build-service and integration-service namespaces
 # This enables Pipelines as Code to work with self-hosted GitLab
-oc get secret tssc-gitlab-integration -n konflux-ui -o yaml | \
-  sed 's/namespace: konflux-ui/namespace: build-service/' | \
+oc get secret tssc-gitlab-integration -n tssc-app-ci -o yaml | \
+  sed 's/namespace: tssc-app-ci/namespace: build-service/' | \
   oc apply -f -
 
-oc get secret tssc-gitlab-integration -n konflux-ui -o yaml | \
-  sed 's/namespace: konflux-ui/namespace: integration-service/' | \
+oc get secret tssc-gitlab-integration -n tssc-app-ci -o yaml | \
+  sed 's/namespace: tssc-app-ci/namespace: integration-service/' | \
   oc apply -f -
 
 # Create Pipelines as Code secret for GitLab in both namespaces
 for ns in build-service integration-service; do
   oc create secret generic pipelines-as-code-secret \
-    --from-literal=provider.url="$(oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.provider\.url}' | base64 -d)" \
-    --from-literal=provider.token="$(oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.token}' | base64 -d)" \
-    --from-literal=webhook.secret="$(oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.webhookSecret}' | base64 -d)" \
+    --from-literal=provider.url="$(oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.provider\.url}' | base64 -d)" \
+    --from-literal=provider.token="$(oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.token}' | base64 -d)" \
+    --from-literal=webhook.secret="$(oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.webhookSecret}' | base64 -d)" \
     -n $ns --dry-run=client -o yaml | oc apply -f -
 done
 
 # Copy Quay integration secret to image-controller namespace
-oc get secret tssc-quay-integration -n konflux-ui -o yaml | \
-  sed 's/namespace: konflux-ui/namespace: image-controller/' | \
+oc get secret tssc-quay-integration -n tssc-app-ci -o yaml | \
+  sed 's/namespace: tssc-app-ci/namespace: image-controller/' | \
   sed 's/name: tssc-quay-integration/name: quaytoken/' | \
   oc apply -f -
 
@@ -1556,11 +1560,11 @@ oc run -n gitlab test-curl --image=curlimages/curl:latest --rm -it --restart=Nev
   -- curl -k https://pipelines-as-code-controller-openshift-pipelines.apps.your-cluster.com/health
 
 # 3. Verify GitLab secret has correct token
-oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.token}' | base64 -d
+oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.token}' | base64 -d
 # Test this token in GitLab (it should have api, read_repository, write_repository scopes)
 
 # 4. Check if GitLab URL is correct
-oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.provider\.url}' | base64 -d
+oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.provider\.url}' | base64 -d
 
 # 5. Verify GitLab personal access token is not expired
 # Log into GitLab → User Settings → Access Tokens
