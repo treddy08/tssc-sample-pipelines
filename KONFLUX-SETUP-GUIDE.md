@@ -342,46 +342,70 @@ oc get pods -n openshift-pipelines
 
 ---
 
-### Step 2: Create Integration Secrets
+### Step 2: Verify Integration Secrets
 
-Before creating the Konflux instance, set up required integration secrets for GitLab and Quay in the `tssc-app-ci` namespace.
+The required integration secrets for GitLab and Quay already exist in the `tssc-app-ci` namespace. Verify they are present.
 
 ```bash
-# Integration secrets are stored in tssc-app-ci namespace
-# Note: tssc-app-ci namespace should be created in Step 4, but we can create it early
-oc create namespace tssc-app-ci --dry-run=client -o yaml | oc apply -f -
+# Verify integration secrets exist in tssc-app-ci namespace
+oc get secrets -n tssc-app-ci | grep tssc
 
+# You should see:
+# tssc-gitlab-integration
+# tssc-quay-integration
+
+# Verify GitLab secret contents
+oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data}' | jq
+
+# Verify Quay secret contents
+oc get secret tssc-quay-integration -n tssc-app-ci -o jsonpath='{.data}' | jq
+```
+
+**Expected Secret Structure:**
+
+**`tssc-gitlab-integration` secret** should contain:
+- `provider.url` - Self-hosted GitLab URL (e.g., `https://gitlab.apps.your-cluster.com`)
+- `token` - GitLab Personal Access Token with `api`, `read_repository`, and `write_repository` scopes
+- `webhookSecret` - Webhook validation secret
+
+**`tssc-quay-integration` secret** should contain:
+- `organization` - Quay.io organization name
+- `token` - Quay.io robot account token
+
+**Note:** These secrets will be used by Konflux:
+- **GitLab secret**: Enable Pipelines as Code to receive webhooks and trigger builds from self-hosted GitLab
+- **Quay secret**: Allow the image controller to push/pull container images
+
+<details>
+<summary>If you need to create or update these secrets, click here</summary>
+
+```bash
 # Create GitLab integration secret
 # Replace with your self-hosted GitLab details
 export GITLAB_URL="https://gitlab.apps.your-cluster.com"  # Your GitLab URL
 export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"  # Personal Access Token
 export GITLAB_WEBHOOK_SECRET="your-random-webhook-secret"  # Generate a random string
 
-# Create GitLab integration secret
+# Create or update GitLab integration secret
 oc create secret generic tssc-gitlab-integration \
   --from-literal=provider.url="${GITLAB_URL}" \
   --from-literal=token="${GITLAB_TOKEN}" \
   --from-literal=webhookSecret="${GITLAB_WEBHOOK_SECRET}" \
-  -n tssc-app-ci
+  -n tssc-app-ci \
+  --dry-run=client -o yaml | oc apply -f -
 
 # Create Quay integration secret
 # Replace with your Quay.io credentials
 export QUAY_ORG="your-quay-org"
 export QUAY_TOKEN="your-quay-robot-token"
 
-# Create Quay integration secret
+# Create or update Quay integration secret
 oc create secret generic tssc-quay-integration \
   --from-literal=organization="${QUAY_ORG}" \
   --from-literal=token="${QUAY_TOKEN}" \
-  -n tssc-app-ci
-
-# Verify secrets created
-oc get secrets -n tssc-app-ci | grep tssc
+  -n tssc-app-ci \
+  --dry-run=client -o yaml | oc apply -f -
 ```
-
-**Note:** These secrets will be used by the Konflux instance to:
-- **GitLab secret**: Enable Pipelines as Code to receive webhooks and trigger builds from self-hosted GitLab
-- **Quay secret**: Allow the image controller to push/pull container images
 
 **GitLab Personal Access Token Requirements:**
 To create a Personal Access Token in GitLab:
@@ -392,6 +416,8 @@ To create a Personal Access Token in GitLab:
    - `write_repository` - Update repository (for commit status updates)
 3. Set an appropriate expiration date
 4. Save the token securely (you won't be able to see it again)
+
+</details>
 
 ---
 
@@ -478,25 +504,25 @@ done
 
 ---
 
-### Step 4: Create Shared Environment Namespaces
+### Step 4: Verify and Create Shared Environment Namespaces
 
-Create the shared environment namespaces. This is a **one-time setup** - all applications from Developer Hub will deploy to these same namespaces.
+Verify or create the shared environment namespaces. This is a **one-time setup** - all applications from Developer Hub will deploy to these same namespaces.
 
 ```bash
-echo "Creating shared TSSC environment namespaces..."
+echo "Verifying/creating shared TSSC environment namespaces..."
 echo "These namespaces will host ALL applications created from Developer Hub template:"
 echo "  - tssc-app-ci (CI/CD namespace - all pipelines)"
 echo "  - tssc-app-development (shared development environment)"
 echo "  - tssc-app-stage (shared staging environment)"
 echo "  - tssc-app-prod (shared production environment)"
 
-# Create CI/CD namespace
-oc create namespace tssc-app-ci
+# Create CI/CD namespace (may already exist with integration secrets)
+oc create namespace tssc-app-ci --dry-run=client -o yaml | oc apply -f -
 
 # Create shared environment namespaces
-oc create namespace tssc-app-development
-oc create namespace tssc-app-stage
-oc create namespace tssc-app-prod
+oc create namespace tssc-app-development --dry-run=client -o yaml | oc apply -f -
+oc create namespace tssc-app-stage --dry-run=client -o yaml | oc apply -f -
+oc create namespace tssc-app-prod --dry-run=client -o yaml | oc apply -f -
 
 # Label namespaces for easier identification
 oc label namespace tssc-app-ci \
