@@ -490,7 +490,12 @@ EOF
 # - build-service: For build operations
 # - integration-service: For integration testing
 # - image-controller: For image management
-# - Additional service namespaces as needed
+# - release-service: For release operations
+# - konflux-info: For Konflux information
+# Additional service namespaces as needed
+
+# IMPORTANT: The image-controller pods will NOT start until the quaytoken secret
+# is copied to the image-controller namespace (done in Step 5)
 
 # Wait for Konflux instance to be ready
 echo "Waiting for Konflux instance to deploy..."
@@ -728,6 +733,21 @@ oc get secret pipelines-as-code-secret -n integration-service
 oc get secret tssc-gitlab-integration -n build-service
 oc get secret tssc-gitlab-integration -n integration-service
 oc get secret quaytoken -n image-controller
+
+# Verify quaytoken secret has all required fields
+echo "Verifying quaytoken secret structure..."
+oc get secret quaytoken -n image-controller -o jsonpath='{.data}' | jq 'keys'
+# Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "token", "url"]
+
+# Wait for image-controller pods to start after secret is created
+echo "Waiting for image-controller pods to become ready..."
+sleep 10
+oc get pods -n image-controller
+
+# Check if image-controller controller manager is running
+echo "Checking image-controller controller manager status..."
+oc wait --for=condition=ready pod -l app.kubernetes.io/name=image-controller -n image-controller --timeout=300s || \
+  echo "Warning: image-controller pods not ready yet. Check 'oc get pods -n image-controller' and troubleshoot if needed."
 ```
 
 **Note:** This enhanced RBAC setup:
@@ -1622,6 +1642,51 @@ oc create rolebinding release-deployer \
   --clusterrole=edit \
   -n tssc-app-development --dry-run=client -o yaml | oc apply -f -
 ```
+
+### Issue: Image Controller Pods Not Starting
+
+**Symptoms:** `image-controller-controller-manager` stuck in `ContainerCreating` or `CreateContainerConfigError`
+
+**Solutions:**
+
+```bash
+# 1. Check if image-controller namespace has the quaytoken secret
+oc get secret quaytoken -n image-controller
+
+# If missing, copy from tssc namespace (see Step 5)
+oc get secret tssc-quay-integration -n tssc -o yaml | \
+  sed 's/namespace: tssc/namespace: image-controller/' | \
+  sed 's/name: tssc-quay-integration/name: quaytoken/' | \
+  oc apply -f -
+
+# 2. Verify the secret has required fields
+oc get secret quaytoken -n image-controller -o jsonpath='{.data}' | jq 'keys'
+# Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "token", "url"]
+
+# 3. Check image-controller pods status
+oc get pods -n image-controller
+
+# 4. Check pod events for specific error
+oc describe pod -n image-controller <pod-name>
+
+# 5. Check image-controller controller manager logs
+oc logs -n image-controller deployment/image-controller-controller-manager
+
+# 6. Restart image-controller deployment if secret was missing
+oc rollout restart deployment/image-controller-controller-manager -n image-controller
+
+# 7. Watch for pods to become ready
+oc get pods -n image-controller -w
+```
+
+**Common Issues:**
+- **Missing quaytoken secret**: Copy from tssc namespace as shown above
+- **Incorrect secret format**: Ensure secret has all 4 fields (.dockerconfigjson, .dockerconfigjsonreadonly, token, url)
+- **Wrong secret name**: Must be named `quaytoken` in image-controller namespace
+- **Image pull errors**: Check if Quay registry is accessible from cluster
+- **Volume mount errors**: Check if secret is properly mounted in pod spec
+
+---
 
 ### Issue: GitLab Integration / Connectivity Issues
 
