@@ -28,9 +28,8 @@ This guide uses the **manual installation approach** based on the logic from Red
 
 - ✅ **Dedicated Operator Namespace**: Konflux operator runs in `konflux-operator` namespace (not `openshift-operators`)
 - ✅ **Service Namespaces**: Konflux automatically creates service namespaces (`build-service`, `integration-service`, `image-controller`)
-- ✅ **Integration Secrets**: Pre-configure GitHub and Quay integration secrets before creating Konflux instance
+- ✅ **Integration Secrets**: Pre-configure Quay integration secrets before creating Konflux instance
 - ✅ **Enhanced RBAC**: Comprehensive permissions including cluster-wide Konflux resource access and secret distribution
-- ✅ **Pipelines as Code**: Properly configured with GitHub App credentials distributed to service namespaces
 
 ---
 
@@ -196,7 +195,6 @@ Before you begin, ensure you have:
 - ✅ **Application name** chosen (e.g., `my-java-app`)
 - ✅ **Git repository** URL for your application
 - ✅ **Container registry** (e.g., quay.io account with credentials)
-- ✅ **GitHub App** credentials (app ID, private key, webhook secret) for Pipelines as Code
 - ✅ **Quay.io** organization and robot account token
 - ✅ **GitOps repository** (optional, for deployment automation)
 
@@ -342,24 +340,11 @@ oc get pods -n openshift-pipelines
 
 ### Step 2: Create Integration Secrets
 
-Before creating the Konflux instance, set up required integration secrets for GitHub and Quay.
+Before creating the Konflux instance, set up required integration secrets for Quay.
 
 ```bash
 # Create namespace for Konflux UI and integration secrets
 oc create namespace konflux-ui
-
-# Create GitHub integration secret
-# Replace with your GitHub App credentials
-export GITHUB_APP_ID="your-github-app-id"
-export GITHUB_PRIVATE_KEY_FILE="/path/to/github-app-private-key.pem"
-export GITHUB_WEBHOOK_SECRET="your-webhook-secret"
-
-# Create GitHub integration secret
-oc create secret generic tssc-github-integration \
-  --from-literal=id="${GITHUB_APP_ID}" \
-  --from-file=pem="${GITHUB_PRIVATE_KEY_FILE}" \
-  --from-literal=webhookSecret="${GITHUB_WEBHOOK_SECRET}" \
-  -n konflux-ui
 
 # Create Quay integration secret
 # Replace with your Quay.io credentials
@@ -372,12 +357,11 @@ oc create secret generic tssc-quay-integration \
   --from-literal=token="${QUAY_TOKEN}" \
   -n konflux-ui
 
-# Verify secrets created
+# Verify secret created
 oc get secrets -n konflux-ui | grep tssc
 ```
 
-**Note:** These secrets will be used by the Konflux instance to:
-- **GitHub secret**: Enable Pipelines as Code to receive webhooks and trigger builds
+**Note:** This secret will be used by the Konflux instance to:
 - **Quay secret**: Allow the image controller to push/pull container images
 
 ---
@@ -581,25 +565,6 @@ oc create rolebinding secret-rw-binding \
   --role=secret-rw \
   -n openshift-pipelines
 
-# Copy GitHub integration secret to build-service and integration-service namespaces
-# This enables Pipelines as Code to work properly
-oc get secret tssc-github-integration -n konflux-ui -o yaml | \
-  sed 's/namespace: konflux-ui/namespace: build-service/' | \
-  oc apply -f -
-
-oc get secret tssc-github-integration -n konflux-ui -o yaml | \
-  sed 's/namespace: konflux-ui/namespace: integration-service/' | \
-  oc apply -f -
-
-# Create Pipelines as Code secret in both namespaces
-for ns in build-service integration-service; do
-  oc create secret generic pipelines-as-code-secret \
-    --from-literal=github-application-id="$(oc get secret tssc-github-integration -n konflux-ui -o jsonpath='{.data.id}' | base64 -d)" \
-    --from-literal=github-private-key="$(oc get secret tssc-github-integration -n konflux-ui -o jsonpath='{.data.pem}' | base64 -d)" \
-    --from-literal=webhook.secret="$(oc get secret tssc-github-integration -n konflux-ui -o jsonpath='{.data.webhookSecret}' | base64 -d)" \
-    -n $ns --dry-run=client -o yaml | oc apply -f -
-done
-
 # Copy Quay integration secret to image-controller namespace
 oc get secret tssc-quay-integration -n konflux-ui -o yaml | \
   sed 's/namespace: konflux-ui/namespace: image-controller/' | \
@@ -632,16 +597,13 @@ oc get serviceaccount release-service-account -n tssc-app-ci
 
 # Verify secrets are copied to the correct namespaces
 echo "Verifying secrets distribution..."
-oc get secret pipelines-as-code-secret -n build-service
-oc get secret pipelines-as-code-secret -n integration-service
 oc get secret quaytoken -n image-controller
 ```
 
 **Note:** This enhanced RBAC setup:
 - Allows the release-service-account to deploy ANY application to the shared environments (multi-tenant model)
 - Grants cluster-wide view permissions for Konflux resources
-- Distributes integration secrets to the appropriate Konflux service namespaces
-- Enables Pipelines as Code to receive webhooks and trigger builds
+- Distributes Quay integration secret to the image-controller namespace for container image operations
 
 ---
 
@@ -966,23 +928,29 @@ oc get releaseplanadmission -n tssc-app-prod
 
 ---
 
-### Step 8: Update Your Application Repository
+### Step 8: Trigger Builds
 
-In your **application repository** (not tssc-sample-pipelines), update the Pipelines as Code trigger.
+Since you don't have webhook integration configured, you can trigger builds manually or set up GitLab webhooks if using GitLab.
 
-**Edit `.tekton/on-push.yaml`:**
+**Option A: Manual Build Trigger**
 
-```yaml
+Create a PipelineRun manually to trigger a build:
+
+```bash
+# Set your application details
+export APP_NAME="my-java-app"
+export COMPONENT_NAME="${APP_NAME}-backend"
+export GIT_URL="https://gitlab.example.com/myorg/my-java-app"
+export GIT_REVISION="main"
+export IMAGE_REPO="quay.io/myorg/my-java-app-backend"
+
+# Create PipelineRun manually
+cat <<EOF | oc apply -f -
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
   generateName: ${APP_NAME}-build-
-  namespace: tssc-app-ci  # ← IMPORTANT: Pipeline runs in CI namespace
-  annotations:
-    pipelinesascode.tekton.dev/on-cel-expression: |
-      body.object_kind == "push" && body.ref == "refs/heads/main"
-    pipelinesascode.tekton.dev/pipeline: "https://gitlab.example.com/rhdh/tssc-sample-pipelines/-/raw/konflux/pipelines/maven-build-ci-konflux.yaml"
-    # Add all your task annotations here...
+  namespace: tssc-app-ci
   labels:
     # CRITICAL: These labels link PipelineRun to Konflux Component
     appstudio.openshift.io/application: ${APP_NAME}
@@ -993,21 +961,21 @@ spec:
     - name: component-name
       value: ${COMPONENT_NAME}
     - name: git-url
-      value: '{{repo_url}}'
+      value: ${GIT_URL}
     - name: output-image
-      value: "${IMAGE_REPO}:{{revision}}"  # Tag with git commit SHA
+      value: "${IMAGE_REPO}:${GIT_REVISION}"
     - name: revision
-      value: '{{revision}}'
+      value: ${GIT_REVISION}
     - name: event-type
-      value: '{{event_type}}'
+      value: push
 
   pipelineRef:
     resolver: cluster
     params:
       - name: name
-        value: maven-build-ci-konflux  # ← NEW Konflux pipeline
+        value: maven-build-ci-konflux
       - name: namespace
-        value: tssc-app-ci  # ← Pipeline in CI namespace
+        value: tssc-app-ci
       - name: kind
         value: Pipeline
 
@@ -1021,19 +989,15 @@ spec:
               storage: 1Gi
     - name: maven-settings
       emptyDir: {}
-    - name: git-auth
-      secret:
-        secretName: git-auth-secret
+EOF
+
+# Watch the build
+oc get pipelineruns -n tssc-app-ci -w
 ```
 
-**Commit and push:**
+**Option B: GitLab Webhook Integration (Optional)**
 
-```bash
-cd your-app-repo
-git add .tekton/on-push.yaml
-git commit -m "Update to use Konflux pipeline"
-git push origin main
-```
+If using GitLab, you can configure webhooks to trigger builds automatically. This requires setting up GitLab webhook secrets and configuring Tekton triggers. See OpenShift Pipelines documentation for GitLab integration details.
 
 ---
 
@@ -1042,12 +1006,54 @@ git push origin main
 ### Test 1: Trigger a Build
 
 ```bash
-# Make a small change to trigger the build
-cd your-app-repo
-echo "# Konflux test" >> README.md
-git add README.md
-git commit -m "Test Konflux flow"
-git push origin main
+# Manually trigger a build (see Step 8 for the complete PipelineRun template)
+# Set your environment variables first
+export APP_NAME="my-java-app"
+export COMPONENT_NAME="${APP_NAME}-backend"
+export GIT_URL="https://gitlab.example.com/myorg/my-java-app"
+export GIT_REVISION="main"
+export IMAGE_REPO="quay.io/myorg/my-java-app-backend"
+
+# Create the PipelineRun (this will auto-generate a unique name)
+cat <<EOF | oc create -f -
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: ${APP_NAME}-build-
+  namespace: tssc-app-ci
+  labels:
+    appstudio.openshift.io/application: ${APP_NAME}
+    appstudio.openshift.io/component: ${COMPONENT_NAME}
+spec:
+  params:
+    - name: component-name
+      value: ${COMPONENT_NAME}
+    - name: git-url
+      value: ${GIT_URL}
+    - name: output-image
+      value: "${IMAGE_REPO}:${GIT_REVISION}"
+    - name: revision
+      value: ${GIT_REVISION}
+  pipelineRef:
+    resolver: cluster
+    params:
+      - name: name
+        value: maven-build-ci-konflux
+      - name: namespace
+        value: tssc-app-ci
+      - name: kind
+        value: Pipeline
+  workspaces:
+    - name: workspace
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
+    - name: maven-settings
+      emptyDir: {}
+EOF
 ```
 
 ### Test 2: Watch the Build Pipeline
@@ -1127,19 +1133,22 @@ oc get pods -n tssc-app-prod
 
 ### Daily Development
 
-Developers only need to push code. Everything else is automatic.
+Developers make changes and trigger builds manually (or use webhook integration if configured separately).
 
 ```bash
 # 1. Developer makes changes
 cd my-java-app
 vim src/main/java/com/example/MyService.java
 
-# 2. Commit and push
+# 2. Commit and push to git
 git add .
 git commit -m "Add new authentication feature"
 git push origin main
 
-# That's it! Konflux handles:
+# 3. Trigger build manually (see Step 8 for details)
+# Or configure GitLab webhooks to trigger builds automatically
+
+# Once build is triggered, Konflux handles:
 # → Build (tssc-app-ci)
 # → Snapshot creation (tssc-app-ci)
 # → Integration tests (tssc-app-ci)
@@ -1271,21 +1280,27 @@ oc get release -n tssc-app-ci -w
 
 ## Troubleshooting
 
-### Issue: Build Doesn't Trigger
+### Issue: Build Doesn't Start
 
-**Symptoms:** Push code but no PipelineRun created
+**Symptoms:** PipelineRun not created or not starting
 
 **Solutions:**
 
 ```bash
-# 1. Check webhook configuration
-oc get repository -A
+# 1. Check if PipelineRun was created
+oc get pipelineruns -n tssc-app-ci --sort-by='.metadata.creationTimestamp' | tail -5
 
-# 2. Verify Pipelines as Code is working
-oc get pods -n pipelines-as-code
+# 2. Check PipelineRun status and conditions
+oc describe pipelinerun <name> -n tssc-app-ci
 
-# 3. Check PipelineRun for errors
-oc get events -n tssc-app-ci --sort-by='.lastTimestamp'
+# 3. Check for recent events
+oc get events -n tssc-app-ci --sort-by='.lastTimestamp' | tail -20
+
+# 4. Verify the pipeline exists
+oc get pipeline maven-build-ci-konflux -n tssc-app-ci
+
+# 5. Ensure service account has necessary permissions
+oc get serviceaccount pipeline -n tssc-app-ci
 ```
 
 ### Issue: No Snapshot Created After Build
