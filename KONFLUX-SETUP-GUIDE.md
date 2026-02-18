@@ -384,7 +384,10 @@ oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data}' | jq
 
 **Note:** When copied to `image-controller` namespace as `quaytoken`, two additional keys will be added:
 - `quaytoken` - Duplicate of `token` (image-controller expects this key name)
-- `organization` - Extracted from username in `.dockerconfigjson` (e.g., `tssc` from `tssc+tssc_rw`)
+- `organization` - Extracted from username in `.dockerconfigjson`
+  - Username format: `organization+robot_account` (e.g., `tssc+tssc_rw`)
+  - Organization value: Part before the `+` (e.g., `tssc`)
+  - **For this deployment, organization should be: `tssc`**
 
 **Note:** These secrets will be used by Konflux:
 - **GitLab secret**:
@@ -483,13 +486,25 @@ echo "Creating quaytoken secret in image-controller namespace..."
 # Get the token value from tssc-quay-integration
 QUAY_TOKEN=$(oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data.token}')
 
-# Extract organization from .dockerconfigjson (username before the '+')
+# Extract organization from .dockerconfigjson
+# Username format is: organization+robot_account (e.g., tssc+tssc_rw)
+# We extract the part before the '+' to get the organization (e.g., tssc)
 DOCKER_CONFIG=$(oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d)
 QUAY_USERNAME=$(echo "$DOCKER_CONFIG" | jq -r '.auths | to_entries[0].value.username')
-QUAY_ORG=$(echo "$QUAY_USERNAME" | cut -d'+' -f1)
-QUAY_ORG_B64=$(echo -n "$QUAY_ORG" | base64 -w0)
+echo "Docker config username: $QUAY_USERNAME"
 
-echo "Extracted organization: $QUAY_ORG"
+# Extract organization (part before '+')
+QUAY_ORG=$(echo "$QUAY_USERNAME" | cut -d'+' -f1)
+echo "Extracted organization: $QUAY_ORG (should be 'tssc')"
+
+# Verify organization is correct
+if [ "$QUAY_ORG" != "tssc" ]; then
+  echo "WARNING: Expected organization 'tssc' but got '$QUAY_ORG'"
+  echo "This may cause image-controller to fail"
+fi
+
+# Base64 encode the organization
+QUAY_ORG_B64=$(echo -n "$QUAY_ORG" | base64 -w0)
 
 # Copy the entire secret and add the quaytoken and organization keys
 oc get secret tssc-quay-integration -n tssc -o json | \
@@ -508,6 +523,18 @@ oc get secret quaytoken -n image-controller
 oc get secret quaytoken -n image-controller -o jsonpath='{.data}' | jq 'keys'
 # Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "organization", "quaytoken", "token", "url"]
 
+# Verify the organization value
+echo ""
+echo "Verifying organization value:"
+ACTUAL_ORG=$(oc get secret quaytoken -n image-controller -o jsonpath='{.data.organization}' | base64 -d)
+echo "Organization in secret: $ACTUAL_ORG"
+if [ "$ACTUAL_ORG" = "tssc" ]; then
+  echo "✓ Organization is correct: tssc"
+else
+  echo "✗ WARNING: Organization is '$ACTUAL_ORG' but should be 'tssc'"
+fi
+
+echo ""
 echo "✓ image-controller namespace and quaytoken secret ready"
 echo "✓ Konflux instance can now be created without image-controller pod failures"
 ```
@@ -518,9 +545,9 @@ echo "✓ Konflux instance can now be created without image-controller pod failu
 - By pre-creating the namespace and secret, pods start successfully on first try
 - This prevents `ContainerCreating` and `CreateContainerConfigError` states
 
-**Note:** The image-controller expects:
-- `quaytoken` key (not just `token`)
-- `organization` key (extracted from username like `tssc+tssc_rw` → `tssc`)
+**Note:** The image-controller expects specific keys in the `quaytoken` secret:
+- `quaytoken` key (not just `token`) - Contains the Quay robot account token
+- `organization` key - Must be set to `tssc` (extracted from username `tssc+tssc_rw`)
 
 ---
 
@@ -1711,9 +1738,13 @@ oc get secret quaytoken -n image-controller
 QUAY_TOKEN=$(oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data.token}')
 
 # Extract organization from .dockerconfigjson
+# Username format: organization+robot_account (e.g., tssc+tssc_rw → tssc)
 DOCKER_CONFIG=$(oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d)
 QUAY_USERNAME=$(echo "$DOCKER_CONFIG" | jq -r '.auths | to_entries[0].value.username')
+echo "Username from Docker config: $QUAY_USERNAME"
+
 QUAY_ORG=$(echo "$QUAY_USERNAME" | cut -d'+' -f1)
+echo "Extracted organization: $QUAY_ORG (expected: tssc)"
 QUAY_ORG_B64=$(echo -n "$QUAY_ORG" | base64 -w0)
 
 # Recreate the secret with all required keys
@@ -1730,11 +1761,21 @@ oc get secret quaytoken -n image-controller -o jsonpath='{.data}' | jq 'keys'
 # Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "organization", "quaytoken", "token", "url"]
 
 # 2a. Verify the quaytoken and organization keys specifically exist
+echo "Verifying required keys:"
 echo "Quay token:"
 oc get secret quaytoken -n image-controller -o jsonpath='{.data.quaytoken}' | base64 -d
 echo ""
+
 echo "Quay organization:"
-oc get secret quaytoken -n image-controller -o jsonpath='{.data.organization}' | base64 -d
+ACTUAL_ORG=$(oc get secret quaytoken -n image-controller -o jsonpath='{.data.organization}' | base64 -d)
+echo "$ACTUAL_ORG"
+
+if [ "$ACTUAL_ORG" = "tssc" ]; then
+  echo "✓ Organization is correct: tssc"
+else
+  echo "✗ WARNING: Organization is '$ACTUAL_ORG' but should be 'tssc'"
+  echo "   Image-controller may fail to authenticate with Quay"
+fi
 echo ""
 
 # 3. Check image-controller pods status
