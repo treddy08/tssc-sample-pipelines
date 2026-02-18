@@ -22,6 +22,18 @@ This guide provides step-by-step instructions to implement Konflux (Red Hat Trus
 
 ---
 
+## Key Implementation Approach
+
+This guide uses the **manual installation approach** based on the logic from Red Hat's `tssc-cli` tool. Key highlights:
+
+- ✅ **Dedicated Operator Namespace**: Konflux operator runs in `konflux-operator` namespace (not `openshift-operators`)
+- ✅ **Service Namespaces**: Konflux automatically creates service namespaces (`build-service`, `integration-service`, `image-controller`)
+- ✅ **Integration Secrets**: Pre-configure GitHub and Quay integration secrets before creating Konflux instance
+- ✅ **Enhanced RBAC**: Comprehensive permissions including cluster-wide Konflux resource access and secret distribution
+- ✅ **Pipelines as Code**: Properly configured with GitHub App credentials distributed to service namespaces
+
+---
+
 ## Overview
 
 This repository contains:
@@ -184,6 +196,8 @@ Before you begin, ensure you have:
 - ✅ **Application name** chosen (e.g., `my-java-app`)
 - ✅ **Git repository** URL for your application
 - ✅ **Container registry** (e.g., quay.io account with credentials)
+- ✅ **GitHub App** credentials (app ID, private key, webhook secret) for Pipelines as Code
+- ✅ **Quay.io** organization and robot account token
 - ✅ **GitOps repository** (optional, for deployment automation)
 
 ---
@@ -231,13 +245,28 @@ tssc-sample-pipelines/
 Install the Konflux operator from the community catalog using the stable channel.
 
 ```bash
+# Create namespace for Konflux operator
+oc create namespace konflux-operator
+
+# Create OperatorGroup for the namespace
+cat <<EOF | oc apply -f -
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: konflux-operator-group
+  namespace: konflux-operator
+spec:
+  targetNamespaces:
+  - konflux-operator
+EOF
+
 # Install Konflux Operator from community catalog
 cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1alpha1
 kind: Subscription
 metadata:
   name: konflux-operator
-  namespace: openshift-operators
+  namespace: konflux-operator
 spec:
   channel: stable-v0
   name: konflux-operator
@@ -251,9 +280,15 @@ echo "Waiting for Konflux operator to install..."
 sleep 60
 
 # Verify Konflux operator is running
-oc get pods -n openshift-operators | grep konflux
+oc get pods -n konflux-operator
 
 # Check that Konflux CRDs are installed
+oc get crd | grep konflux
+
+# You should see:
+# konfluxes.konflux.konflux-ci.dev
+
+# Also check for AppStudio CRDs
 oc get crd | grep appstudio
 
 # You should see:
@@ -305,9 +340,51 @@ oc get pods -n openshift-pipelines
 
 ---
 
-### Step 2: Create Konflux Instance
+### Step 2: Create Integration Secrets
 
-After the operator is installed, create a Konflux instance to deploy the Konflux controllers.
+Before creating the Konflux instance, set up required integration secrets for GitHub and Quay.
+
+```bash
+# Create namespace for Konflux UI and integration secrets
+oc create namespace konflux-ui
+
+# Create GitHub integration secret
+# Replace with your GitHub App credentials
+export GITHUB_APP_ID="your-github-app-id"
+export GITHUB_PRIVATE_KEY_FILE="/path/to/github-app-private-key.pem"
+export GITHUB_WEBHOOK_SECRET="your-webhook-secret"
+
+# Create GitHub integration secret
+oc create secret generic tssc-github-integration \
+  --from-literal=id="${GITHUB_APP_ID}" \
+  --from-file=pem="${GITHUB_PRIVATE_KEY_FILE}" \
+  --from-literal=webhookSecret="${GITHUB_WEBHOOK_SECRET}" \
+  -n konflux-ui
+
+# Create Quay integration secret
+# Replace with your Quay.io credentials
+export QUAY_ORG="your-quay-org"
+export QUAY_TOKEN="your-quay-robot-token"
+
+# Create Quay integration secret
+oc create secret generic tssc-quay-integration \
+  --from-literal=organization="${QUAY_ORG}" \
+  --from-literal=token="${QUAY_TOKEN}" \
+  -n konflux-ui
+
+# Verify secrets created
+oc get secrets -n konflux-ui | grep tssc
+```
+
+**Note:** These secrets will be used by the Konflux instance to:
+- **GitHub secret**: Enable Pipelines as Code to receive webhooks and trigger builds
+- **Quay secret**: Allow the image controller to push/pull container images
+
+---
+
+### Step 3: Create Konflux Instance
+
+After the operator is installed and integration secrets are configured, create a Konflux instance to deploy the Konflux controllers.
 
 ```bash
 # Verify the Konflux CRD is available
@@ -323,10 +400,18 @@ apiVersion: konflux.konflux-ci.dev/v1alpha1
 kind: Konflux
 metadata:
   name: konflux  # MUST be exactly 'konflux' (singleton)
+  namespace: konflux-ui
 spec:
-  # Default configuration - deploys all Konflux controllers
-  # Controllers: application-service, integration-service, release-service, etc.
+  # Enable image controller for container image management
+  imageController:
+    enabled: true
 EOF
+
+# Note: The Konflux instance will automatically create the following namespaces:
+# - build-service: For build operations
+# - integration-service: For integration testing
+# - image-controller: For image management
+# - Additional service namespaces as needed
 
 # Wait for Konflux instance to be ready
 echo "Waiting for Konflux instance to deploy..."
@@ -337,36 +422,47 @@ oc get konflux konflux -o yaml
 
 # Verify Konflux controllers are running
 # Controllers may be deployed in different namespaces
-oc get pods -A | grep -E "application-service|integration-service|release-service|build-service"
+oc get pods -A | grep -E "application-service|integration-service|release-service|build-service|image-controller"
 
-# Common Konflux controller namespaces:
-# - application-service-system
-# - integration-service-system
-# - release-service-system
-# - build-service
+# Common Konflux namespaces created:
+# - build-service: Build operations
+# - integration-service: Integration testing
+# - image-controller: Image management
+# - application-service-system: Application controller
+# - release-service-system: Release controller
 
 # You should see controller pods like:
-# application-service-controller-manager-*
+# build-service-controller-manager-*
 # integration-service-controller-manager-*
 # release-service-controller-manager-*
+# image-controller-*
 ```
 
-**Verify all Konflux controllers are ready:**
+**Verify all Konflux namespaces and controllers are ready:**
 
 ```bash
 # List all Konflux-related namespaces
-oc get namespaces | grep -E "application-service|integration-service|release-service|build-service"
+oc get namespaces | grep -E "konflux|build-service|integration-service|image-controller|application-service|release-service"
 
-# Check each controller namespace
-for ns in $(oc get namespaces -o name | grep -E "application-service|integration-service|release-service"); do
-  echo "Checking $ns..."
-  oc get pods -n ${ns#namespace/}
+# Expected namespaces:
+# - konflux-ui (Konflux instance)
+# - konflux-operator (Operator)
+# - build-service (Builds)
+# - integration-service (Integration tests)
+# - image-controller (Image management)
+# - application-service-system (Application CRD controller)
+# - release-service-system (Release CRD controller)
+
+# Check key controller namespaces
+for ns in build-service integration-service image-controller; do
+  echo "Checking $ns namespace..."
+  oc get pods -n $ns 2>/dev/null || echo "Namespace $ns not yet created"
 done
 ```
 
 ---
 
-### Step 3: Create Shared Environment Namespaces
+### Step 4: Create Shared Environment Namespaces
 
 Create the shared environment namespaces. This is a **one-time setup** - all applications from Developer Hub will deploy to these same namespaces.
 
@@ -423,7 +519,7 @@ tssc-app-prod          Active   1m
 
 ---
 
-### Step 4: Setup RBAC (Cross-Namespace Permissions)
+### Step 5: Setup RBAC (Cross-Namespace Permissions)
 
 The release pipeline runs in `tssc-app-ci` but needs to deploy to the shared environment namespaces. This is a **one-time setup** for all applications.
 
@@ -449,6 +545,67 @@ oc create rolebinding release-deployer \
   --clusterrole=edit \
   -n tssc-app-prod
 
+# Create ClusterRole for viewing Konflux resources
+cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: konflux-viewer
+rules:
+- apiGroups: ["konflux.konflux-ci.dev"]
+  resources: ["konfluxes"]
+  verbs: ["get", "list", "watch"]
+EOF
+
+# Grant service account permission to view Konflux instances cluster-wide
+oc create clusterrolebinding konflux-viewer-binding \
+  --serviceaccount=tssc-app-ci:release-service-account \
+  --clusterrole=konflux-viewer
+
+# Create role for secret read-write in pipelines namespace
+cat <<EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-rw
+  namespace: openshift-pipelines
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+EOF
+
+# Grant service account secret access in pipelines namespace
+oc create rolebinding secret-rw-binding \
+  --serviceaccount=tssc-app-ci:release-service-account \
+  --role=secret-rw \
+  -n openshift-pipelines
+
+# Copy GitHub integration secret to build-service and integration-service namespaces
+# This enables Pipelines as Code to work properly
+oc get secret tssc-github-integration -n konflux-ui -o yaml | \
+  sed 's/namespace: konflux-ui/namespace: build-service/' | \
+  oc apply -f -
+
+oc get secret tssc-github-integration -n konflux-ui -o yaml | \
+  sed 's/namespace: konflux-ui/namespace: integration-service/' | \
+  oc apply -f -
+
+# Create Pipelines as Code secret in both namespaces
+for ns in build-service integration-service; do
+  oc create secret generic pipelines-as-code-secret \
+    --from-literal=github-application-id="$(oc get secret tssc-github-integration -n konflux-ui -o jsonpath='{.data.id}' | base64 -d)" \
+    --from-literal=github-private-key="$(oc get secret tssc-github-integration -n konflux-ui -o jsonpath='{.data.pem}' | base64 -d)" \
+    --from-literal=webhook.secret="$(oc get secret tssc-github-integration -n konflux-ui -o jsonpath='{.data.webhookSecret}' | base64 -d)" \
+    -n $ns --dry-run=client -o yaml | oc apply -f -
+done
+
+# Copy Quay integration secret to image-controller namespace
+oc get secret tssc-quay-integration -n konflux-ui -o yaml | \
+  sed 's/namespace: konflux-ui/namespace: image-controller/' | \
+  sed 's/name: tssc-quay-integration/name: quaytoken/' | \
+  oc apply -f -
+
 # If you have registry credentials, link them
 # oc create secret docker-registry quay-credentials \
 #   --docker-server=quay.io \
@@ -469,14 +626,26 @@ echo "Verifying RBAC configuration..."
 oc get rolebindings -n tssc-app-development | grep release-deployer
 oc get rolebindings -n tssc-app-stage | grep release-deployer
 oc get rolebindings -n tssc-app-prod | grep release-deployer
+oc get clusterrolebinding konflux-viewer-binding
+oc get rolebinding secret-rw-binding -n openshift-pipelines
 oc get serviceaccount release-service-account -n tssc-app-ci
+
+# Verify secrets are copied to the correct namespaces
+echo "Verifying secrets distribution..."
+oc get secret pipelines-as-code-secret -n build-service
+oc get secret pipelines-as-code-secret -n integration-service
+oc get secret quaytoken -n image-controller
 ```
 
-**Note:** This RBAC setup allows the release-service-account to deploy ANY application to the shared environments. This is intentional for the multi-tenant model.
+**Note:** This enhanced RBAC setup:
+- Allows the release-service-account to deploy ANY application to the shared environments (multi-tenant model)
+- Grants cluster-wide view permissions for Konflux resources
+- Distributes integration secrets to the appropriate Konflux service namespaces
+- Enables Pipelines as Code to receive webhooks and trigger builds
 
 ---
 
-### Step 5: Install Pipelines and Tasks
+### Step 6: Install Pipelines and Tasks
 
 Install all pipelines and tasks in the `tssc-app-ci` namespace:
 
@@ -512,11 +681,11 @@ oc get pipelines -n tssc-app-ci
 
 ---
 
-### Step 6: Configure and Apply Konflux Resources
+### Step 7: Configure and Apply Konflux Resources
 
 Now we'll create all the Konflux CRs. These tell Konflux about your application.
 
-#### 5.1: Edit and Apply Application
+#### 7.1: Edit and Apply Application
 
 ```bash
 # Set your application details
@@ -541,7 +710,7 @@ EOF
 oc get application ${APP_NAME} -n tssc-app-ci
 ```
 
-#### 5.2: Edit and Apply Component
+#### 7.2: Edit and Apply Component
 
 ```bash
 # Set your component details
@@ -578,7 +747,7 @@ oc get component ${COMPONENT_NAME} -n tssc-app-ci
 oc describe component ${COMPONENT_NAME} -n tssc-app-ci
 ```
 
-#### 5.3: Apply Integration Test Scenario
+#### 7.3: Apply Integration Test Scenario
 
 ```bash
 # Create IntegrationTestScenario
@@ -610,7 +779,7 @@ EOF
 oc get integrationtestscenario integration-tests -n tssc-app-ci
 ```
 
-#### 5.4: Apply ReleasePlans (All 3)
+#### 7.4: Apply ReleasePlans (All 3)
 
 **Note:** Each application needs its own set of ReleasePlans, but they all target the same shared environment namespaces.
 
@@ -690,7 +859,7 @@ my-java-app-release-to-stage          true           tssc-app-stage
 my-java-app-release-to-prod           false          tssc-app-prod
 ```
 
-#### 5.5: Apply ReleasePlanAdmissions (One per Environment)
+#### 7.5: Apply ReleasePlanAdmissions (One per Environment)
 
 **IMPORTANT:** ReleasePlanAdmissions are created **once per environment namespace** and accept releases from ALL applications. This is a one-time setup, not per-app.
 
@@ -797,7 +966,7 @@ oc get releaseplanadmission -n tssc-app-prod
 
 ---
 
-### Step 7: Update Your Application Repository
+### Step 8: Update Your Application Repository
 
 In your **application repository** (not tssc-sample-pipelines), update the Pipelines as Code trigger.
 
