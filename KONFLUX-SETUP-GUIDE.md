@@ -646,9 +646,17 @@ echo "Waiting for image-controller controller manager to be ready..."
 oc wait --for=condition=ready pod -l app.kubernetes.io/name=image-controller \
   -n image-controller --timeout=300s || \
   echo "Warning: image-controller pods not ready. Check status with: oc get pods -n image-controller"
+
+# Check for common startup errors
+echo "Checking image-controller logs for errors..."
+oc logs -n image-controller deployment/image-controller-controller-manager --tail=50 | grep -i error || echo "No errors found"
+
+# Note: If you see "CSRF token was invalid or missing" errors, this is related to
+# Quay's health probe and may not prevent the image-controller from functioning
+# See troubleshooting section for details
 ```
 
-**Note:** Because we pre-created the `image-controller` namespace and `quaytoken` secret in Step 2.1, the image-controller pods should start successfully on the first try.
+**Note:** Because we pre-created the `image-controller` namespace and `quaytoken` secret in Step 2.1, the image-controller pods should start successfully. However, you may see CSRF token errors in the logs related to Quay health probes - these are typically non-blocking for normal image operations.
 
 ---
 
@@ -1815,11 +1823,85 @@ oc get pods -n image-controller -w
 ```
 
 **Common Issues:**
-- **Missing quaytoken secret**: Copy from tssc namespace as shown above
-- **Incorrect secret format**: Ensure secret has all 4 fields (.dockerconfigjson, .dockerconfigjsonreadonly, token, url)
+- **Missing quaytoken secret**: Create secret as shown above with quaytoken and organization fields
+- **Incorrect secret format**: Ensure secret has ONLY two fields: quaytoken and organization
 - **Wrong secret name**: Must be named `quaytoken` in image-controller namespace
+- **Wrong organization value**: Must be `tssc` (extracted from username like `tssc+tssc_rw`)
 - **Image pull errors**: Check if Quay registry is accessible from cluster
 - **Volume mount errors**: Check if secret is properly mounted in pod spec
+
+---
+
+### Issue: Image Controller CSRF Token Error
+
+**Symptoms:** `unable to register quay availability probe: CSRF token was invalid or missing`
+
+This error occurs when image-controller tries to create a test robot account in Quay to verify connectivity.
+
+**Solutions:**
+
+```bash
+# 1. Check image-controller logs for the full error
+oc logs -n image-controller deployment/image-controller-controller-manager | grep -A 5 "CSRF"
+
+# 2. Verify the quaytoken has correct permissions
+# The token must have permissions to create robot accounts
+# Log into Quay UI and check robot account permissions
+
+# 3. Check if Quay requires CSRF tokens for API calls
+# For self-hosted Quay, CSRF validation may be enabled by default
+
+# 4. Verify the organization exists in Quay
+QUAY_URL=$(oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data.url}' | base64 -d)
+echo "Quay URL: $QUAY_URL"
+echo "Organization should be: tssc"
+# Log into Quay UI and verify organization 'tssc' exists
+
+# 5. Test Quay API access manually
+QUAY_TOKEN=$(oc get secret quaytoken -n image-controller -o jsonpath='{.data.quaytoken}' | base64 -d)
+QUAY_ORG=$(oc get secret quaytoken -n image-controller -o jsonpath='{.data.organization}' | base64 -d)
+
+# Test API access (replace QUAY_HOST with your Quay hostname)
+QUAY_HOST="quay-c76tb-1.apps.cluster-c76tb.dynamic.redhatworkshops.io"
+curl -k -H "Authorization: Bearer ${QUAY_TOKEN}" \
+  "https://${QUAY_HOST}/api/v1/organization/${QUAY_ORG}"
+
+# 6. Check robot account permissions
+# The robot account used must have "Admin" permissions on the organization
+# to create other robot accounts
+```
+
+**Root Cause:**
+The image-controller performs a health check by attempting to create a temporary robot account in Quay. This requires:
+- Robot account token with admin permissions on the organization
+- Quay API must allow robot account creation via API
+- CSRF validation may interfere with API calls
+
+**Workarounds:**
+
+**Option 1: Disable image-controller health probe (if not critical)**
+```bash
+# Check if image-controller has configuration to disable the probe
+oc get deployment image-controller-controller-manager -n image-controller -o yaml | grep -A 10 "env:"
+
+# You may need to patch the deployment to disable the probe
+# This is environment-specific and may require Konflux operator configuration
+```
+
+**Option 2: Ensure robot account has admin permissions**
+1. Log into Quay UI
+2. Navigate to Organization → `tssc`
+3. Go to Robot Accounts → `tssc+tssc_rw`
+4. Verify permissions include "Admin" role
+5. If not, upgrade the robot account permissions
+
+**Option 3: Check Quay CSRF settings**
+For self-hosted Quay, you may need to configure CSRF token handling:
+1. Check Quay configuration for `CSRF_TOKEN_ENFORCEMENT`
+2. Ensure API tokens bypass CSRF validation
+3. This may require Quay administrator access to modify config
+
+**Note:** This error doesn't prevent image-controller from functioning for image management, but the health probe will continue to fail. The image-controller can still pull/push images with the provided credentials.
 
 ---
 
