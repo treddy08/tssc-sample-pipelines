@@ -195,11 +195,15 @@ Before you begin, ensure you have:
 - ✅ **OpenShift Pipelines (Tekton)** will be installed in Step 1 if not present
 - ✅ **Application name** chosen (e.g., `my-java-app`)
 - ✅ **Git repository** URL for your application in self-hosted GitLab
-- ✅ **Container registry** (e.g., quay.io account with credentials)
-- ✅ **Quay.io** organization and robot account token
-- ✅ **GitLab Personal Access Token** with `api`, `read_repository`, and `write_repository` scopes
-- ✅ **GitLab webhook secret** (a random string for webhook validation)
-- ✅ **Self-hosted GitLab URL** (e.g., `https://gitlab.apps.your-cluster.com`)
+- ✅ **Container registry** - Self-hosted Quay registry with robot account credentials
+- ✅ **Quay robot accounts**:
+  - Read-write robot account (e.g., `tssc+tssc_rw`)
+  - Read-only robot account (e.g., `tssc+tssc_ro`)
+- ✅ **GitLab details**:
+  - Self-hosted GitLab hostname and port
+  - GitLab group name
+  - GitLab username
+  - GitLab Personal Access Token with `api`, `read_repository`, and `write_repository` scopes
 - ✅ **GitOps repository** (optional, for deployment automation)
 
 ---
@@ -364,17 +368,31 @@ oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data}' | jq
 **Expected Secret Structure:**
 
 **`tssc-gitlab-integration` secret** should contain:
-- `provider.url` - Self-hosted GitLab URL (e.g., `https://gitlab.apps.your-cluster.com`)
+- `clientId` - OAuth client ID (optional, can be empty)
+- `clientSecret` - OAuth client secret (optional, can be empty)
+- `group` - GitLab group name (e.g., `rhdh`)
+- `host` - GitLab hostname (e.g., `gitlab-gitlab.apps.cluster-c76tb.dynamic.redhatworkshops.io`)
+- `port` - GitLab port (e.g., `443`)
 - `token` - GitLab Personal Access Token with `api`, `read_repository`, and `write_repository` scopes
-- `webhookSecret` - Webhook validation secret
+- `username` - GitLab username (e.g., `root`)
 
 **`tssc-quay-integration` secret** should contain:
-- `organization` - Quay.io organization name
-- `token` - Quay.io robot account token
+- `.dockerconfigjson` - Docker config JSON for read-write access
+- `.dockerconfigjsonreadonly` - Docker config JSON for read-only access
+- `token` - Quay robot account token
+- `url` - Quay registry URL (e.g., `https://quay-c76tb-1.apps.cluster-c76tb.dynamic.redhatworkshops.io`)
 
 **Note:** These secrets will be used by Konflux:
-- **GitLab secret**: Enable Pipelines as Code to receive webhooks and trigger builds from self-hosted GitLab
-- **Quay secret**: Allow the image controller to push/pull container images
+- **GitLab secret**:
+  - `host` and `port` - Construct GitLab URL for API access
+  - `token` - Authenticate with GitLab API for webhook and repository operations
+  - `username` and `group` - GitLab user and group context
+  - `clientId` and `clientSecret` - OAuth authentication (optional)
+- **Quay secret**:
+  - `.dockerconfigjson` - Docker credentials for pulling/pushing images (read-write)
+  - `.dockerconfigjsonreadonly` - Docker credentials for pulling images only (read-only)
+  - `token` - Quay API token for registry operations
+  - `url` - Quay registry URL
 
 <details>
 <summary>If you need to create or update these secrets, click here</summary>
@@ -382,27 +400,46 @@ oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data}' | jq
 ```bash
 # Create GitLab integration secret
 # Replace with your self-hosted GitLab details
-export GITLAB_URL="https://gitlab.apps.your-cluster.com"  # Your GitLab URL
+export GITLAB_HOST="gitlab-gitlab.apps.cluster-c76tb.dynamic.redhatworkshops.io"
+export GITLAB_PORT="443"
+export GITLAB_GROUP="rhdh"  # Your GitLab group
 export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"  # Personal Access Token
-export GITLAB_WEBHOOK_SECRET="your-random-webhook-secret"  # Generate a random string
+export GITLAB_USERNAME="root"  # Your GitLab username
 
 # Create or update GitLab integration secret
 oc create secret generic tssc-gitlab-integration \
-  --from-literal=provider.url="${GITLAB_URL}" \
+  --from-literal=clientId="" \
+  --from-literal=clientSecret="" \
+  --from-literal=group="${GITLAB_GROUP}" \
+  --from-literal=host="${GITLAB_HOST}" \
+  --from-literal=port="${GITLAB_PORT}" \
   --from-literal=token="${GITLAB_TOKEN}" \
-  --from-literal=webhookSecret="${GITLAB_WEBHOOK_SECRET}" \
+  --from-literal=username="${GITLAB_USERNAME}" \
   -n tssc \
   --dry-run=client -o yaml | oc apply -f -
 
 # Create Quay integration secret
-# Replace with your Quay.io credentials
-export QUAY_ORG="your-quay-org"
+# Replace with your Quay registry details
+export QUAY_URL="https://quay-c76tb-1.apps.cluster-c76tb.dynamic.redhatworkshops.io"
 export QUAY_TOKEN="your-quay-robot-token"
+export QUAY_USERNAME="tssc+tssc_rw"  # Your Quay robot account username
+export QUAY_PASSWORD="your-quay-robot-password"  # Your Quay robot account password
+export QUAY_EMAIL="admin@apps.cluster-c76tb.dynamic.redhatworkshops.io"
+
+# Create Docker config JSON for read-write access
+export DOCKER_CONFIG_RW=$(echo -n "{\"auths\": {\"${QUAY_URL#https://}\": {\"username\": \"${QUAY_USERNAME}\", \"password\": \"${QUAY_PASSWORD}\", \"email\": \"${QUAY_EMAIL}\", \"auth\": \"$(echo -n ${QUAY_USERNAME}:${QUAY_PASSWORD} | base64 -w0)\"}}}" | base64 -w0)
+
+# For read-only, use tssc+tssc_ro username with its password
+export QUAY_USERNAME_RO="tssc+tssc_ro"
+export QUAY_PASSWORD_RO="your-quay-readonly-password"
+export DOCKER_CONFIG_RO=$(echo -n "{\"auths\": {\"${QUAY_URL#https://}\": {\"username\": \"${QUAY_USERNAME_RO}\", \"password\": \"${QUAY_PASSWORD_RO}\", \"email\": \"${QUAY_EMAIL}\", \"auth\": \"$(echo -n ${QUAY_USERNAME_RO}:${QUAY_PASSWORD_RO} | base64 -w0)\"}}}" | base64 -w0)
 
 # Create or update Quay integration secret
 oc create secret generic tssc-quay-integration \
-  --from-literal=organization="${QUAY_ORG}" \
+  --from-literal=.dockerconfigjson="${DOCKER_CONFIG_RW}" \
+  --from-literal=.dockerconfigjsonreadonly="${DOCKER_CONFIG_RO}" \
   --from-literal=token="${QUAY_TOKEN}" \
+  --from-literal=url="${QUAY_URL}" \
   -n tssc \
   --dry-run=client -o yaml | oc apply -f -
 ```
@@ -634,11 +671,23 @@ oc get secret tssc-gitlab-integration -n tssc -o yaml | \
   oc apply -f -
 
 # Create Pipelines as Code secret for GitLab in both namespaces
+# Extract GitLab details from tssc-gitlab-integration secret
+GITLAB_HOST=$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.host}' | base64 -d)
+GITLAB_PORT=$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.port}' | base64 -d)
+GITLAB_TOKEN=$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.token}' | base64 -d)
+
+# Construct GitLab URL (https://host:port)
+GITLAB_URL="https://${GITLAB_HOST}:${GITLAB_PORT}"
+
+# Note: Webhook secret will be configured per repository
+# For now, create a generic webhook secret or leave empty
+WEBHOOK_SECRET=$(openssl rand -hex 20)
+
 for ns in build-service integration-service; do
   oc create secret generic pipelines-as-code-secret \
-    --from-literal=provider.url="$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.provider\.url}' | base64 -d)" \
-    --from-literal=provider.token="$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.token}' | base64 -d)" \
-    --from-literal=webhook.secret="$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.webhookSecret}' | base64 -d)" \
+    --from-literal=provider.url="${GITLAB_URL}" \
+    --from-literal=provider.token="${GITLAB_TOKEN}" \
+    --from-literal=webhook.secret="${WEBHOOK_SECRET}" \
     -n $ns --dry-run=client -o yaml | oc apply -f -
 done
 
@@ -684,8 +733,12 @@ oc get secret quaytoken -n image-controller
 **Note:** This enhanced RBAC setup:
 - Allows the release-service-account to deploy ANY application to the shared environments (multi-tenant model)
 - Grants cluster-wide view permissions for Konflux resources
-- Distributes GitLab integration secrets to build-service and integration-service namespaces for Pipelines as Code
-- Distributes Quay integration secret to the image-controller namespace for container image operations
+- Distributes GitLab integration secrets to build-service and integration-service namespaces:
+  - Full `tssc-gitlab-integration` secret copied for component operations
+  - `pipelines-as-code-secret` created with GitLab URL and token for webhook integration
+- Distributes Quay integration secret to image-controller namespace:
+  - Renamed to `quaytoken` for image controller operations
+  - Contains Docker configs and Quay API token
 - Enables automatic webhook-based builds from self-hosted GitLab
 
 ---
@@ -1589,8 +1642,10 @@ oc run -n gitlab test-curl --image=curlimages/curl:latest --rm -it --restart=Nev
 oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.token}' | base64 -d
 # Test this token in GitLab (it should have api, read_repository, write_repository scopes)
 
-# 4. Check if GitLab URL is correct
-oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.provider\.url}' | base64 -d
+# 4. Check if GitLab host and port are correct
+GITLAB_HOST=$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.host}' | base64 -d)
+GITLAB_PORT=$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.port}' | base64 -d)
+echo "GitLab URL: https://${GITLAB_HOST}:${GITLAB_PORT}"
 
 # 5. Verify GitLab personal access token is not expired
 # Log into GitLab → User Settings → Access Tokens
