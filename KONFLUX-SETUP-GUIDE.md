@@ -382,6 +382,8 @@ oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data}' | jq
 - `token` - Quay robot account token
 - `url` - Quay registry URL (e.g., `https://quay-c76tb-1.apps.cluster-c76tb.dynamic.redhatworkshops.io`)
 
+**Note:** When copied to `image-controller` namespace as `quaytoken`, a `quaytoken` key will be added (duplicate of `token`) since the image-controller expects this specific key name.
+
 **Note:** These secrets will be used by Konflux:
 - **GitLab secret**:
   - `host` and `port` - Construct GitLab URL for API access
@@ -473,10 +475,18 @@ oc label namespace image-controller \
   app.kubernetes.io/managed-by=konflux
 
 # Copy Quay integration secret from tssc to image-controller namespace
+# and add the 'quaytoken' key that image-controller expects
 echo "Creating quaytoken secret in image-controller namespace..."
-oc get secret tssc-quay-integration -n tssc -o yaml | \
-  sed 's/namespace: tssc/namespace: image-controller/' | \
-  sed 's/name: tssc-quay-integration/name: quaytoken/' | \
+
+# Get the token value from tssc-quay-integration
+QUAY_TOKEN=$(oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data.token}')
+
+# Copy the entire secret and add the quaytoken key
+oc get secret tssc-quay-integration -n tssc -o json | \
+  jq --arg token "$QUAY_TOKEN" '.data.quaytoken = $token' | \
+  jq '.metadata.namespace = "image-controller"' | \
+  jq '.metadata.name = "quaytoken"' | \
+  jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp)' | \
   oc apply -f -
 
 # Verify the secret was created with all required fields
@@ -485,7 +495,7 @@ oc get secret quaytoken -n image-controller
 
 # Check secret structure
 oc get secret quaytoken -n image-controller -o jsonpath='{.data}' | jq 'keys'
-# Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "token", "url"]
+# Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "quaytoken", "token", "url"]
 
 echo "✓ image-controller namespace and quaytoken secret ready"
 echo "✓ Konflux instance can now be created without image-controller pod failures"
@@ -1683,14 +1693,21 @@ oc create rolebinding release-deployer \
 oc get secret quaytoken -n image-controller
 
 # If missing, copy from tssc namespace (should have been created in Step 2.1)
-oc get secret tssc-quay-integration -n tssc -o yaml | \
-  sed 's/namespace: tssc/namespace: image-controller/' | \
-  sed 's/name: tssc-quay-integration/name: quaytoken/' | \
+QUAY_TOKEN=$(oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data.token}')
+oc get secret tssc-quay-integration -n tssc -o json | \
+  jq --arg token "$QUAY_TOKEN" '.data.quaytoken = $token' | \
+  jq '.metadata.namespace = "image-controller"' | \
+  jq '.metadata.name = "quaytoken"' | \
+  jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp)' | \
   oc apply -f -
 
-# 2. Verify the secret has required fields
+# 2. Verify the secret has required fields including 'quaytoken' key
 oc get secret quaytoken -n image-controller -o jsonpath='{.data}' | jq 'keys'
-# Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "token", "url"]
+# Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "quaytoken", "token", "url"]
+
+# 2a. Verify the quaytoken key specifically exists
+oc get secret quaytoken -n image-controller -o jsonpath='{.data.quaytoken}' | base64 -d
+# Should show the Quay token value
 
 # 3. Check image-controller pods status
 oc get pods -n image-controller
