@@ -28,8 +28,9 @@ This guide uses the **manual installation approach** based on the logic from Red
 
 - ✅ **Dedicated Operator Namespace**: Konflux operator runs in `konflux-operator` namespace (not `openshift-operators`)
 - ✅ **Service Namespaces**: Konflux automatically creates service namespaces (`build-service`, `integration-service`, `image-controller`)
-- ✅ **Integration Secrets**: Pre-configure Quay integration secrets before creating Konflux instance
+- ✅ **Integration Secrets**: Pre-configure GitLab and Quay integration secrets before creating Konflux instance
 - ✅ **Enhanced RBAC**: Comprehensive permissions including cluster-wide Konflux resource access and secret distribution
+- ✅ **GitLab Integration**: Pipelines as Code configured with self-hosted GitLab webhooks for automatic build triggering
 
 ---
 
@@ -193,9 +194,12 @@ Before you begin, ensure you have:
 - ✅ **Konflux Operator** will be installed in Step 1 (from community catalog)
 - ✅ **OpenShift Pipelines (Tekton)** will be installed in Step 1 if not present
 - ✅ **Application name** chosen (e.g., `my-java-app`)
-- ✅ **Git repository** URL for your application
+- ✅ **Git repository** URL for your application in self-hosted GitLab
 - ✅ **Container registry** (e.g., quay.io account with credentials)
 - ✅ **Quay.io** organization and robot account token
+- ✅ **GitLab Personal Access Token** with `api`, `read_repository`, and `write_repository` scopes
+- ✅ **GitLab webhook secret** (a random string for webhook validation)
+- ✅ **Self-hosted GitLab URL** (e.g., `https://gitlab.apps.your-cluster.com`)
 - ✅ **GitOps repository** (optional, for deployment automation)
 
 ---
@@ -340,11 +344,24 @@ oc get pods -n openshift-pipelines
 
 ### Step 2: Create Integration Secrets
 
-Before creating the Konflux instance, set up required integration secrets for Quay.
+Before creating the Konflux instance, set up required integration secrets for GitLab and Quay.
 
 ```bash
 # Create namespace for Konflux UI and integration secrets
 oc create namespace konflux-ui
+
+# Create GitLab integration secret
+# Replace with your self-hosted GitLab details
+export GITLAB_URL="https://gitlab.apps.your-cluster.com"  # Your GitLab URL
+export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"  # Personal Access Token
+export GITLAB_WEBHOOK_SECRET="your-random-webhook-secret"  # Generate a random string
+
+# Create GitLab integration secret
+oc create secret generic tssc-gitlab-integration \
+  --from-literal=provider.url="${GITLAB_URL}" \
+  --from-literal=token="${GITLAB_TOKEN}" \
+  --from-literal=webhookSecret="${GITLAB_WEBHOOK_SECRET}" \
+  -n konflux-ui
 
 # Create Quay integration secret
 # Replace with your Quay.io credentials
@@ -357,12 +374,23 @@ oc create secret generic tssc-quay-integration \
   --from-literal=token="${QUAY_TOKEN}" \
   -n konflux-ui
 
-# Verify secret created
+# Verify secrets created
 oc get secrets -n konflux-ui | grep tssc
 ```
 
-**Note:** This secret will be used by the Konflux instance to:
+**Note:** These secrets will be used by the Konflux instance to:
+- **GitLab secret**: Enable Pipelines as Code to receive webhooks and trigger builds from self-hosted GitLab
 - **Quay secret**: Allow the image controller to push/pull container images
+
+**GitLab Personal Access Token Requirements:**
+To create a Personal Access Token in GitLab:
+1. Navigate to GitLab → User Settings → Access Tokens
+2. Create a new token with the following scopes:
+   - `api` - Full API access
+   - `read_repository` - Read repository contents
+   - `write_repository` - Update repository (for commit status updates)
+3. Set an appropriate expiration date
+4. Save the token securely (you won't be able to see it again)
 
 ---
 
@@ -565,6 +593,25 @@ oc create rolebinding secret-rw-binding \
   --role=secret-rw \
   -n openshift-pipelines
 
+# Copy GitLab integration secret to build-service and integration-service namespaces
+# This enables Pipelines as Code to work with self-hosted GitLab
+oc get secret tssc-gitlab-integration -n konflux-ui -o yaml | \
+  sed 's/namespace: konflux-ui/namespace: build-service/' | \
+  oc apply -f -
+
+oc get secret tssc-gitlab-integration -n konflux-ui -o yaml | \
+  sed 's/namespace: konflux-ui/namespace: integration-service/' | \
+  oc apply -f -
+
+# Create Pipelines as Code secret for GitLab in both namespaces
+for ns in build-service integration-service; do
+  oc create secret generic pipelines-as-code-secret \
+    --from-literal=provider.url="$(oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.provider\.url}' | base64 -d)" \
+    --from-literal=provider.token="$(oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.token}' | base64 -d)" \
+    --from-literal=webhook.secret="$(oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.webhookSecret}' | base64 -d)" \
+    -n $ns --dry-run=client -o yaml | oc apply -f -
+done
+
 # Copy Quay integration secret to image-controller namespace
 oc get secret tssc-quay-integration -n konflux-ui -o yaml | \
   sed 's/namespace: konflux-ui/namespace: image-controller/' | \
@@ -597,13 +644,19 @@ oc get serviceaccount release-service-account -n tssc-app-ci
 
 # Verify secrets are copied to the correct namespaces
 echo "Verifying secrets distribution..."
+oc get secret pipelines-as-code-secret -n build-service
+oc get secret pipelines-as-code-secret -n integration-service
+oc get secret tssc-gitlab-integration -n build-service
+oc get secret tssc-gitlab-integration -n integration-service
 oc get secret quaytoken -n image-controller
 ```
 
 **Note:** This enhanced RBAC setup:
 - Allows the release-service-account to deploy ANY application to the shared environments (multi-tenant model)
 - Grants cluster-wide view permissions for Konflux resources
+- Distributes GitLab integration secrets to build-service and integration-service namespaces for Pipelines as Code
 - Distributes Quay integration secret to the image-controller namespace for container image operations
+- Enables automatic webhook-based builds from self-hosted GitLab
 
 ---
 
@@ -928,46 +981,52 @@ oc get releaseplanadmission -n tssc-app-prod
 
 ---
 
-### Step 8: Trigger Builds
+### Step 8: Configure GitLab Webhooks and Pipeline Triggers
 
-Since you don't have webhook integration configured, you can trigger builds manually or set up GitLab webhooks if using GitLab.
+Now that GitLab integration is configured, you can set up automatic build triggering via webhooks.
 
-**Option A: Manual Build Trigger**
+**Step 8.1: Create Pipelines as Code Configuration in Your Application Repository**
 
-Create a PipelineRun manually to trigger a build:
+In your **application repository** (not tssc-sample-pipelines), create the `.tekton` directory and PipelineRun configuration.
 
 ```bash
-# Set your application details
-export APP_NAME="my-java-app"
-export COMPONENT_NAME="${APP_NAME}-backend"
-export GIT_URL="https://gitlab.example.com/myorg/my-java-app"
-export GIT_REVISION="main"
-export IMAGE_REPO="quay.io/myorg/my-java-app-backend"
+# In your application repository
+cd your-app-repo
 
-# Create PipelineRun manually
-cat <<EOF | oc apply -f -
+# Create .tekton directory
+mkdir -p .tekton
+
+# Create the PipelineRun configuration
+cat > .tekton/push.yaml <<'EOF'
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: ${APP_NAME}-build-
+  name: build-on-push
   namespace: tssc-app-ci
+  annotations:
+    # Pipelines as Code annotations for GitLab
+    pipelinesascode.tekton.dev/on-event: "[push]"
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/max-keep-runs: "5"
+    pipelinesascode.tekton.dev/task: |
+      - https://raw.githubusercontent.com/tektoncd/catalog/main/task/git-clone/0.9/git-clone.yaml
   labels:
     # CRITICAL: These labels link PipelineRun to Konflux Component
-    appstudio.openshift.io/application: ${APP_NAME}
-    appstudio.openshift.io/component: ${COMPONENT_NAME}
-    backstage.io/kubernetes-id: ${APP_NAME}
+    appstudio.openshift.io/application: my-java-app
+    appstudio.openshift.io/component: my-java-app-backend
+    backstage.io/kubernetes-id: my-java-app
 spec:
   params:
     - name: component-name
-      value: ${COMPONENT_NAME}
+      value: my-java-app-backend
     - name: git-url
-      value: ${GIT_URL}
+      value: "{{ repo_url }}"
     - name: output-image
-      value: "${IMAGE_REPO}:${GIT_REVISION}"
+      value: "quay.io/myorg/my-java-app-backend:{{ revision }}"
     - name: revision
-      value: ${GIT_REVISION}
+      value: "{{ revision }}"
     - name: event-type
-      value: push
+      value: "{{ event_type }}"
 
   pipelineRef:
     resolver: cluster
@@ -991,69 +1050,99 @@ spec:
       emptyDir: {}
 EOF
 
-# Watch the build
-oc get pipelineruns -n tssc-app-ci -w
+# Commit and push the configuration
+git add .tekton/push.yaml
+git commit -m "Add Pipelines as Code configuration for Konflux"
+git push origin main
 ```
 
-**Option B: GitLab Webhook Integration (Optional)**
+**Important:** Replace the following placeholders in `.tekton/push.yaml`:
+- `my-java-app` → Your application name
+- `my-java-app-backend` → Your component name
+- `quay.io/myorg/my-java-app-backend` → Your image repository
 
-If using GitLab, you can configure webhooks to trigger builds automatically. This requires setting up GitLab webhook secrets and configuring Tekton triggers. See OpenShift Pipelines documentation for GitLab integration details.
+**Step 8.2: Configure GitLab Webhook**
+
+Pipelines as Code needs to create a webhook in your GitLab repository. This happens automatically when you create a Repository CR.
+
+```bash
+# Set your GitLab repository details
+export GITLAB_URL="https://gitlab.apps.your-cluster.com"
+export GITLAB_PROJECT="myorg/my-java-app"  # Format: namespace/project
+export APP_NAME="my-java-app"
+
+# Create Pipelines as Code Repository CR
+cat <<EOF | oc apply -f -
+apiVersion: "pipelinesascode.tekton.dev/v1alpha1"
+kind: Repository
+metadata:
+  name: ${APP_NAME}
+  namespace: tssc-app-ci
+spec:
+  url: "${GITLAB_URL}/${GITLAB_PROJECT}"
+  git_provider:
+    type: gitlab
+    url: "${GITLAB_URL}"
+    secret:
+      name: pipelines-as-code-secret
+      key: provider.token
+    webhook_secret:
+      name: pipelines-as-code-secret
+      key: webhook.secret
+EOF
+
+# Verify Repository CR created
+oc get repository ${APP_NAME} -n tssc-app-ci
+
+# Check Repository status
+oc describe repository ${APP_NAME} -n tssc-app-ci
+```
+
+**Step 8.3: Verify Webhook in GitLab**
+
+After creating the Repository CR, Pipelines as Code will automatically create a webhook in your GitLab project.
+
+1. Navigate to your GitLab project
+2. Go to **Settings** → **Webhooks**
+3. You should see a webhook pointing to your OpenShift Pipelines as Code route
+4. The webhook should be configured for **Push events** and **Merge request events**
+
+**Step 8.4: Get Pipelines as Code Route**
+
+```bash
+# Get the Pipelines as Code webhook URL
+oc get route pipelines-as-code-controller -n openshift-pipelines
+
+# Or get full webhook URL
+echo "Webhook URL: https://$(oc get route pipelines-as-code-controller -n openshift-pipelines -o jsonpath='{.spec.host}')"
+```
+
+**Note:** If the webhook wasn't created automatically, you can create it manually in GitLab:
+1. Go to your GitLab project → Settings → Webhooks
+2. URL: `https://<pipelines-as-code-route>/hook`
+3. Secret Token: Use the value from `GITLAB_WEBHOOK_SECRET` you set earlier
+4. Trigger: Enable "Push events" and "Merge request events"
+5. SSL verification: Enable if using valid certificates
 
 ---
 
 ## Testing the Flow
 
-### Test 1: Trigger a Build
+### Test 1: Trigger a Build via GitLab Push
+
+Now that webhooks are configured, simply push code to trigger a build automatically.
 
 ```bash
-# Manually trigger a build (see Step 8 for the complete PipelineRun template)
-# Set your environment variables first
-export APP_NAME="my-java-app"
-export COMPONENT_NAME="${APP_NAME}-backend"
-export GIT_URL="https://gitlab.example.com/myorg/my-java-app"
-export GIT_REVISION="main"
-export IMAGE_REPO="quay.io/myorg/my-java-app-backend"
+# In your application repository
+cd your-app-repo
 
-# Create the PipelineRun (this will auto-generate a unique name)
-cat <<EOF | oc create -f -
-apiVersion: tekton.dev/v1
-kind: PipelineRun
-metadata:
-  generateName: ${APP_NAME}-build-
-  namespace: tssc-app-ci
-  labels:
-    appstudio.openshift.io/application: ${APP_NAME}
-    appstudio.openshift.io/component: ${COMPONENT_NAME}
-spec:
-  params:
-    - name: component-name
-      value: ${COMPONENT_NAME}
-    - name: git-url
-      value: ${GIT_URL}
-    - name: output-image
-      value: "${IMAGE_REPO}:${GIT_REVISION}"
-    - name: revision
-      value: ${GIT_REVISION}
-  pipelineRef:
-    resolver: cluster
-    params:
-      - name: name
-        value: maven-build-ci-konflux
-      - name: namespace
-        value: tssc-app-ci
-      - name: kind
-        value: Pipeline
-  workspaces:
-    - name: workspace
-      volumeClaimTemplate:
-        spec:
-          accessModes: [ReadWriteOnce]
-          resources:
-            requests:
-              storage: 1Gi
-    - name: maven-settings
-      emptyDir: {}
-EOF
+# Make a small change to trigger the build
+echo "# Konflux test" >> README.md
+git add README.md
+git commit -m "Test Konflux flow"
+git push origin main
+
+# The webhook will automatically trigger a PipelineRun
 ```
 
 ### Test 2: Watch the Build Pipeline
@@ -1133,22 +1222,19 @@ oc get pods -n tssc-app-prod
 
 ### Daily Development
 
-Developers make changes and trigger builds manually (or use webhook integration if configured separately).
+Developers only need to push code. Everything else is automatic via GitLab webhooks.
 
 ```bash
 # 1. Developer makes changes
 cd my-java-app
 vim src/main/java/com/example/MyService.java
 
-# 2. Commit and push to git
+# 2. Commit and push to GitLab
 git add .
 git commit -m "Add new authentication feature"
 git push origin main
 
-# 3. Trigger build manually (see Step 8 for details)
-# Or configure GitLab webhooks to trigger builds automatically
-
-# Once build is triggered, Konflux handles:
+# That's it! GitLab webhook triggers Konflux, which handles:
 # → Build (tssc-app-ci)
 # → Snapshot creation (tssc-app-ci)
 # → Integration tests (tssc-app-ci)
@@ -1280,28 +1366,49 @@ oc get release -n tssc-app-ci -w
 
 ## Troubleshooting
 
-### Issue: Build Doesn't Start
+### Issue: Build Doesn't Trigger After Git Push
 
-**Symptoms:** PipelineRun not created or not starting
+**Symptoms:** Push code to GitLab but no PipelineRun created
 
 **Solutions:**
 
 ```bash
-# 1. Check if PipelineRun was created
-oc get pipelineruns -n tssc-app-ci --sort-by='.metadata.creationTimestamp' | tail -5
+# 1. Check Repository CR status
+oc get repository -n tssc-app-ci
+oc describe repository <your-app-name> -n tssc-app-ci
 
-# 2. Check PipelineRun status and conditions
-oc describe pipelinerun <name> -n tssc-app-ci
+# 2. Verify Pipelines as Code controller is running
+oc get pods -n openshift-pipelines | grep pipelines-as-code
 
-# 3. Check for recent events
+# 3. Check Pipelines as Code controller logs
+oc logs -n openshift-pipelines deployment/pipelines-as-code-controller --tail=50
+
+# 4. Verify webhook exists in GitLab
+# Go to GitLab project → Settings → Webhooks
+# Verify webhook URL and secret token are correct
+
+# 5. Test webhook manually in GitLab
+# Go to GitLab project → Settings → Webhooks
+# Click "Test" → "Push events"
+# Check the response
+
+# 6. Check GitLab integration secret
+oc get secret pipelines-as-code-secret -n build-service
+oc get secret tssc-gitlab-integration -n build-service
+
+# 7. Verify .tekton/push.yaml exists in your repository
+# Check your application repo has .tekton/push.yaml committed
+
+# 8. Check recent events in tssc-app-ci namespace
 oc get events -n tssc-app-ci --sort-by='.lastTimestamp' | tail -20
-
-# 4. Verify the pipeline exists
-oc get pipeline maven-build-ci-konflux -n tssc-app-ci
-
-# 5. Ensure service account has necessary permissions
-oc get serviceaccount pipeline -n tssc-app-ci
 ```
+
+**Common Issues:**
+- **Webhook not created**: Manually create webhook in GitLab pointing to Pipelines as Code route
+- **Wrong secret**: Ensure webhook secret in GitLab matches `GITLAB_WEBHOOK_SECRET`
+- **Missing .tekton/push.yaml**: Commit the Pipelines as Code configuration to your repo
+- **Wrong namespace**: Ensure `.tekton/push.yaml` specifies `namespace: tssc-app-ci`
+- **SSL verification failed**: If using self-signed certs, disable SSL verification in webhook settings
 
 ### Issue: No Snapshot Created After Build
 
@@ -1431,6 +1538,80 @@ oc create rolebinding release-deployer \
   --serviceaccount=tssc-app-ci:release-service-account \
   --clusterrole=edit \
   -n tssc-app-development --dry-run=client -o yaml | oc apply -f -
+```
+
+### Issue: GitLab Integration / Connectivity Issues
+
+**Symptoms:** Webhooks not reaching OpenShift or authentication failures
+
+**Solutions:**
+
+```bash
+# 1. Verify GitLab can reach Pipelines as Code route
+oc get route pipelines-as-code-controller -n openshift-pipelines
+
+# 2. Check if route is accessible from GitLab namespace
+# If GitLab is in the same cluster, test connectivity
+oc run -n gitlab test-curl --image=curlimages/curl:latest --rm -it --restart=Never \
+  -- curl -k https://pipelines-as-code-controller-openshift-pipelines.apps.your-cluster.com/health
+
+# 3. Verify GitLab secret has correct token
+oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.token}' | base64 -d
+# Test this token in GitLab (it should have api, read_repository, write_repository scopes)
+
+# 4. Check if GitLab URL is correct
+oc get secret tssc-gitlab-integration -n konflux-ui -o jsonpath='{.data.provider\.url}' | base64 -d
+
+# 5. Verify GitLab personal access token is not expired
+# Log into GitLab → User Settings → Access Tokens
+# Check token expiration date
+
+# 6. Test GitLab API access from OpenShift
+oc run -n tssc-app-ci test-gitlab-api --image=curlimages/curl:latest --rm -it --restart=Never \
+  -- curl -k -H "PRIVATE-TOKEN: your-gitlab-token" https://gitlab.apps.your-cluster.com/api/v4/user
+
+# 7. Check Pipelines as Code can authenticate to GitLab
+oc logs -n openshift-pipelines deployment/pipelines-as-code-controller | grep -i gitlab
+
+# 8. Verify network policies allow traffic between namespaces
+oc get networkpolicies -n gitlab
+oc get networkpolicies -n openshift-pipelines
+```
+
+**Common Issues:**
+- **SSL/TLS issues**: If using self-signed certificates, you may need to configure trust
+- **Network policies blocking**: Ensure network policies allow traffic from openshift-pipelines to gitlab namespace
+- **Token expired**: Generate a new GitLab Personal Access Token
+- **Wrong GitLab URL**: Ensure the URL matches your self-hosted GitLab instance
+- **Firewall/ingress**: Ensure GitLab can make outbound HTTPS connections to the Pipelines as Code route
+
+**For self-hosted GitLab in the same cluster:**
+
+```bash
+# Allow communication between gitlab and openshift-pipelines namespaces
+# This may be needed if network policies are restrictive
+
+# Create NetworkPolicy in openshift-pipelines to allow ingress from gitlab
+cat <<EOF | oc apply -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-gitlab
+  namespace: openshift-pipelines
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: gitlab
+EOF
+
+# Verify GitLab can reach the route
+# From a GitLab pod, test connectivity:
+oc exec -n gitlab <gitlab-pod-name> -- curl -k https://pipelines-as-code-controller-openshift-pipelines.apps.your-cluster.com/health
 ```
 
 ---
