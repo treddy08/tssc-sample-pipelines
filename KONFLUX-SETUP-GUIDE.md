@@ -344,21 +344,21 @@ oc get pods -n openshift-pipelines
 
 ### Step 2: Verify Integration Secrets
 
-The required integration secrets for GitLab and Quay already exist in the `tssc-app-ci` namespace. Verify they are present.
+The required integration secrets for GitLab and Quay already exist in the `tssc` namespace. Verify they are present.
 
 ```bash
-# Verify integration secrets exist in tssc-app-ci namespace
-oc get secrets -n tssc-app-ci | grep tssc
+# Verify integration secrets exist in tssc namespace
+oc get secrets -n tssc | grep tssc
 
 # You should see:
 # tssc-gitlab-integration
 # tssc-quay-integration
 
 # Verify GitLab secret contents
-oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data}' | jq
+oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data}' | jq
 
 # Verify Quay secret contents
-oc get secret tssc-quay-integration -n tssc-app-ci -o jsonpath='{.data}' | jq
+oc get secret tssc-quay-integration -n tssc -o jsonpath='{.data}' | jq
 ```
 
 **Expected Secret Structure:**
@@ -391,7 +391,7 @@ oc create secret generic tssc-gitlab-integration \
   --from-literal=provider.url="${GITLAB_URL}" \
   --from-literal=token="${GITLAB_TOKEN}" \
   --from-literal=webhookSecret="${GITLAB_WEBHOOK_SECRET}" \
-  -n tssc-app-ci \
+  -n tssc \
   --dry-run=client -o yaml | oc apply -f -
 
 # Create Quay integration secret
@@ -403,7 +403,7 @@ export QUAY_TOKEN="your-quay-robot-token"
 oc create secret generic tssc-quay-integration \
   --from-literal=organization="${QUAY_ORG}" \
   --from-literal=token="${QUAY_TOKEN}" \
-  -n tssc-app-ci \
+  -n tssc \
   --dry-run=client -o yaml | oc apply -f -
 ```
 
@@ -623,28 +623,28 @@ oc create rolebinding secret-rw-binding \
   --role=secret-rw \
   -n openshift-pipelines
 
-# Copy GitLab integration secret to build-service and integration-service namespaces
+# Copy GitLab integration secret from tssc to build-service and integration-service namespaces
 # This enables Pipelines as Code to work with self-hosted GitLab
-oc get secret tssc-gitlab-integration -n tssc-app-ci -o yaml | \
-  sed 's/namespace: tssc-app-ci/namespace: build-service/' | \
+oc get secret tssc-gitlab-integration -n tssc -o yaml | \
+  sed 's/namespace: tssc/namespace: build-service/' | \
   oc apply -f -
 
-oc get secret tssc-gitlab-integration -n tssc-app-ci -o yaml | \
-  sed 's/namespace: tssc-app-ci/namespace: integration-service/' | \
+oc get secret tssc-gitlab-integration -n tssc -o yaml | \
+  sed 's/namespace: tssc/namespace: integration-service/' | \
   oc apply -f -
 
 # Create Pipelines as Code secret for GitLab in both namespaces
 for ns in build-service integration-service; do
   oc create secret generic pipelines-as-code-secret \
-    --from-literal=provider.url="$(oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.provider\.url}' | base64 -d)" \
-    --from-literal=provider.token="$(oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.token}' | base64 -d)" \
-    --from-literal=webhook.secret="$(oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.webhookSecret}' | base64 -d)" \
+    --from-literal=provider.url="$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.provider\.url}' | base64 -d)" \
+    --from-literal=provider.token="$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.token}' | base64 -d)" \
+    --from-literal=webhook.secret="$(oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.webhookSecret}' | base64 -d)" \
     -n $ns --dry-run=client -o yaml | oc apply -f -
 done
 
-# Copy Quay integration secret to image-controller namespace
-oc get secret tssc-quay-integration -n tssc-app-ci -o yaml | \
-  sed 's/namespace: tssc-app-ci/namespace: image-controller/' | \
+# Copy Quay integration secret from tssc to image-controller namespace
+oc get secret tssc-quay-integration -n tssc -o yaml | \
+  sed 's/namespace: tssc/namespace: image-controller/' | \
   sed 's/name: tssc-quay-integration/name: quaytoken/' | \
   oc apply -f -
 
@@ -1586,11 +1586,11 @@ oc run -n gitlab test-curl --image=curlimages/curl:latest --rm -it --restart=Nev
   -- curl -k https://pipelines-as-code-controller-openshift-pipelines.apps.your-cluster.com/health
 
 # 3. Verify GitLab secret has correct token
-oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.token}' | base64 -d
+oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.token}' | base64 -d
 # Test this token in GitLab (it should have api, read_repository, write_repository scopes)
 
 # 4. Check if GitLab URL is correct
-oc get secret tssc-gitlab-integration -n tssc-app-ci -o jsonpath='{.data.provider\.url}' | base64 -d
+oc get secret tssc-gitlab-integration -n tssc -o jsonpath='{.data.provider\.url}' | base64 -d
 
 # 5. Verify GitLab personal access token is not expired
 # Log into GitLab → User Settings → Access Tokens
