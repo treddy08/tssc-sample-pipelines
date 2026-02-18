@@ -494,11 +494,8 @@ EOF
 # - konflux-info: For Konflux information
 # Additional service namespaces as needed
 
-# IMPORTANT: The image-controller pods will NOT start until the quaytoken secret
-# is copied to the image-controller namespace (done in Step 5)
-
-# Wait for Konflux instance to be ready
-echo "Waiting for Konflux instance to deploy..."
+# Wait for Konflux instance to be ready and namespaces to be created
+echo "Waiting for Konflux instance to deploy and create namespaces..."
 sleep 120
 
 # Check Konflux instance status
@@ -534,15 +531,65 @@ oc get namespaces | grep -E "konflux|build-service|integration-service|image-con
 # - build-service (Builds)
 # - integration-service (Integration tests)
 # - image-controller (Image management)
-# - application-service-system (Application CRD controller)
-# - release-service-system (Release CRD controller)
+# - release-service (Release service)
+# - konflux-info (Konflux information)
 
-# Check key controller namespaces
-for ns in build-service integration-service image-controller; do
+# Wait for namespaces to be fully created
+sleep 30
+```
+
+---
+
+### Step 3.1: Create Image Controller Secret
+
+**IMPORTANT**: The image-controller pods will fail to start without the `quaytoken` secret. Create it immediately after the Konflux instance is deployed.
+
+```bash
+# Wait for image-controller namespace to be created
+echo "Waiting for image-controller namespace..."
+until oc get namespace image-controller &>/dev/null; do
+  echo "Waiting for image-controller namespace to be created..."
+  sleep 10
+done
+
+echo "image-controller namespace exists, creating quaytoken secret..."
+
+# Copy Quay integration secret from tssc to image-controller namespace
+oc get secret tssc-quay-integration -n tssc -o yaml | \
+  sed 's/namespace: tssc/namespace: image-controller/' | \
+  sed 's/name: tssc-quay-integration/name: quaytoken/' | \
+  oc apply -f -
+
+# Verify the secret was created with all required fields
+echo "Verifying quaytoken secret..."
+oc get secret quaytoken -n image-controller
+
+# Check secret structure
+oc get secret quaytoken -n image-controller -o jsonpath='{.data}' | jq 'keys'
+# Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "token", "url"]
+
+# Wait for image-controller pods to start with the secret
+echo "Waiting for image-controller pods to start..."
+sleep 30
+
+# Check image-controller pod status
+oc get pods -n image-controller
+
+# Wait for image-controller controller manager to be ready
+echo "Waiting for image-controller controller manager to be ready..."
+oc wait --for=condition=ready pod -l app.kubernetes.io/name=image-controller \
+  -n image-controller --timeout=300s || \
+  echo "Warning: image-controller pods not ready yet. This is expected if this is the first time. Check status with: oc get pods -n image-controller"
+
+# Verify all Konflux service pods
+echo "Checking all Konflux service namespaces..."
+for ns in build-service integration-service image-controller release-service; do
   echo "Checking $ns namespace..."
-  oc get pods -n $ns 2>/dev/null || echo "Namespace $ns not yet created"
+  oc get pods -n $ns 2>/dev/null || echo "Namespace $ns not yet ready"
 done
 ```
+
+**Note:** The image-controller is critical for Konflux to manage container images. It must have the `quaytoken` secret to authenticate with your Quay registry.
 
 ---
 
@@ -696,13 +743,11 @@ for ns in build-service integration-service; do
     -n $ns --dry-run=client -o yaml | oc apply -f -
 done
 
-# Copy Quay integration secret from tssc to image-controller namespace
-oc get secret tssc-quay-integration -n tssc -o yaml | \
-  sed 's/namespace: tssc/namespace: image-controller/' | \
-  sed 's/name: tssc-quay-integration/name: quaytoken/' | \
-  oc apply -f -
+# Note: Quay integration secret was already copied to image-controller namespace in Step 3.1
+# Verify it exists
+oc get secret quaytoken -n image-controller
 
-# If you have registry credentials, link them
+# If you have additional registry credentials, link them
 # oc create secret docker-registry quay-credentials \
 #   --docker-server=quay.io \
 #   --docker-username=YOUR_USERNAME \
@@ -732,22 +777,7 @@ oc get secret pipelines-as-code-secret -n build-service
 oc get secret pipelines-as-code-secret -n integration-service
 oc get secret tssc-gitlab-integration -n build-service
 oc get secret tssc-gitlab-integration -n integration-service
-oc get secret quaytoken -n image-controller
-
-# Verify quaytoken secret has all required fields
-echo "Verifying quaytoken secret structure..."
-oc get secret quaytoken -n image-controller -o jsonpath='{.data}' | jq 'keys'
-# Should show: [".dockerconfigjson", ".dockerconfigjsonreadonly", "token", "url"]
-
-# Wait for image-controller pods to start after secret is created
-echo "Waiting for image-controller pods to become ready..."
-sleep 10
-oc get pods -n image-controller
-
-# Check if image-controller controller manager is running
-echo "Checking image-controller controller manager status..."
-oc wait --for=condition=ready pod -l app.kubernetes.io/name=image-controller -n image-controller --timeout=300s || \
-  echo "Warning: image-controller pods not ready yet. Check 'oc get pods -n image-controller' and troubleshoot if needed."
+oc get secret quaytoken -n image-controller  # Was created in Step 3.1
 ```
 
 **Note:** This enhanced RBAC setup:
